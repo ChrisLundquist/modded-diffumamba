@@ -31,14 +31,16 @@ import torch.nn.functional as F
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
-# Mamba-3 import with fallback for CPU testing
+# SSM backend: Mamba-3 (custom kernels) → PureSSM (pure PyTorch fallback)
 # ---------------------------------------------------------------------------
 
 try:
     from mamba_ssm.modules.mamba3 import Mamba3
-    HAS_MAMBA3 = True
+    SSM_BACKEND = "mamba3"
 except ImportError:
-    HAS_MAMBA3 = False
+    SSM_BACKEND = "pure"
+
+from ssm import PureSSM
 
 
 # ---------------------------------------------------------------------------
@@ -134,25 +136,6 @@ class SwiGLU(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Simple SSM fallback for CPU testing (no mamba_ssm)
-# ---------------------------------------------------------------------------
-
-class SimpleSSM(nn.Module):
-    """Minimal gated conv for testing without mamba_ssm. Not efficient."""
-    def __init__(self, d_model: int, **kwargs):
-        super().__init__()
-        d_inner = d_model * 2
-        self.in_proj = nn.Linear(d_model, d_inner * 2, bias=False)
-        self.conv1d = nn.Conv1d(d_inner, d_inner, kernel_size=4, padding=2, groups=d_inner)
-        self.out_proj = nn.Linear(d_inner, d_model, bias=False)
-
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        z, h = self.in_proj(x).chunk(2, dim=-1)
-        h = self.conv1d(h.transpose(1, 2))[..., :h.size(1)].transpose(1, 2)
-        return self.out_proj(F.silu(h) * F.silu(z))
-
-
-# ---------------------------------------------------------------------------
 # BiMamba3 Block
 # ---------------------------------------------------------------------------
 
@@ -168,8 +151,8 @@ class BiMamba3Block(nn.Module):
                  mlp_expansion: int = 2, dtype=torch.bfloat16):
         super().__init__()
 
-        # Build SSM layers
-        if HAS_MAMBA3:
+        # Build SSM layers: Mamba-3 (fast, needs custom kernels) or PureSSM (portable)
+        if SSM_BACKEND == "mamba3":
             ssm_kwargs = dict(
                 d_model=d_model, d_state=d_state, headdim=headdim,
                 expand=expand, is_mimo=is_mimo, mimo_rank=mimo_rank,
@@ -178,8 +161,10 @@ class BiMamba3Block(nn.Module):
             self.mamba_fwd = Mamba3(**ssm_kwargs)
             self.mamba_bwd = Mamba3(**ssm_kwargs)
         else:
-            self.mamba_fwd = SimpleSSM(d_model)
-            self.mamba_bwd = SimpleSSM(d_model)
+            # PureSSM: proper selective SSM in pure PyTorch (works on any GPU)
+            ssm_kwargs = dict(d_model=d_model, d_state=d_state, expand=expand)
+            self.mamba_fwd = PureSSM(**ssm_kwargs)
+            self.mamba_bwd = PureSSM(**ssm_kwargs)
 
         # Conditioning and MLP
         self.adaln_mamba = AdaLN(d_model, cond_dim)
