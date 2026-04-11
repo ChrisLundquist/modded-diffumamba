@@ -253,6 +253,7 @@ def train(args):
     if args.seq_len is not None:
         config.max_seq_len = args.seq_len
     config.time_conditioning = not args.no_time_cond
+    config.flat_elbo_weight = args.flat_weight
 
     # Build model
     model = DiffuMamba3(config).to(device)
@@ -268,7 +269,8 @@ def train(args):
     print(f"\nModel: {args.config} ({n_params/1e6:.1f}M params)")
     print(f"  d_model={config.d_model}, n_layers={config.n_layers}, "
           f"seq_len={config.max_seq_len}, compile={args.compile}")
-    print(f"  time_conditioning={config.time_conditioning}")
+    print(f"  time_conditioning={config.time_conditioning}, "
+          f"flat_elbo_weight={config.flat_elbo_weight}")
 
     # Data (cached locally after first download)
     print(f"\nLoading data...")
@@ -301,12 +303,16 @@ def train(args):
         # ---- Validation ----
         if step % args.val_every == 0:
             model.eval()
+            # Always use standard ELBO weighting for val (comparable across configs)
+            saved_flat = config.flat_elbo_weight
+            config.flat_elbo_weight = False
             val_losses = []
             with torch.no_grad():
                 for _ in range(args.val_steps):
                     x_0 = next(val_loader).to(device)
                     loss, _ = model.compute_loss(x_0)
                     val_losses.append(loss.item())
+            config.flat_elbo_weight = saved_flat
             val_loss = sum(val_losses) / len(val_losses)
             elapsed = time.perf_counter() - t0
 
@@ -409,6 +415,8 @@ def parse_args():
     p.add_argument("--seq_len", type=int, default=None)
     p.add_argument("--no_time_cond", action="store_true",
                    help="Disable timestep conditioning (MDLM default)")
+    p.add_argument("--flat_weight", action="store_true",
+                   help="Use flat ELBO weight (weight=1) instead of 1/t")
 
     # Optimizer
     p.add_argument("--optimizer", type=str, default="muon",

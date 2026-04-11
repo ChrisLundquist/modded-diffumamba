@@ -148,7 +148,11 @@ class PureSSM(nn.Module):
     def _scan(self, x: torch.Tensor, A: torch.Tensor,
               B: torch.Tensor, C: torch.Tensor,
               dt: torch.Tensor) -> torch.Tensor:
-        """Selective scan using chunk-wise computation.
+        """Selective scan — flat sequential (no chunking overhead).
+
+        The recurrence h_t = dA_t * h_{t-1} + dB_t * x_t is inherently
+        sequential, so chunking adds overhead without parallelism benefit.
+        This flat loop is simpler and more torch.compile friendly.
 
         Args:
             x:  (B, L, n, headdim) — input values
@@ -169,38 +173,17 @@ class PureSSM(nn.Module):
         dA = torch.exp(A.view(1, 1, n, s) * dt_exp)  # (B, L, n, s)
         dB = B * dt_exp  # (B, L, n, s)
 
-        # Chunk the sequence for efficiency
-        chunk = self.chunk_size
-        n_chunks = (L + chunk - 1) // chunk
-        # Pad to multiple of chunk_size
-        pad = n_chunks * chunk - L
-        if pad > 0:
-            x = F.pad(x, (0, 0, 0, 0, 0, pad))
-            dA = F.pad(dA, (0, 0, 0, 0, 0, pad), value=1.0)
-            dB = F.pad(dB, (0, 0, 0, 0, 0, pad))
-            C = F.pad(C, (0, 0, 0, 0, 0, pad))
-
-        # Reshape into chunks: (B, n_chunks, chunk, ...)
-        x_c = x.view(B_sz, n_chunks, chunk, n, hdim)
-        dA_c = dA.view(B_sz, n_chunks, chunk, n, s)
-        dB_c = dB.view(B_sz, n_chunks, chunk, n, s)
-        C_c = C.view(B_sz, n_chunks, chunk, n, s)
-
-        # Intra-chunk scan (sequential within each chunk, parallel across chunks)
-        y_chunks = []
+        # Pre-allocate output
+        y = torch.zeros(B_sz, L, n, hdim, device=device, dtype=x.dtype)
         h = torch.zeros(B_sz, n, s, hdim, device=device, dtype=x.dtype)
 
-        for ci in range(n_chunks):
-            y_chunk = torch.zeros(B_sz, chunk, n, hdim, device=device, dtype=x.dtype)
-            for t in range(chunk):
-                # h = dA * h + dB * x  (outer product: (B,n,s) x (B,n,hdim) → (B,n,s,hdim))
-                h = dA_c[:, ci, t, :, :, None] * h + \
-                    dB_c[:, ci, t, :, :, None] * x_c[:, ci, t, :, None, :]
-                # y = C @ h  → (B, n, hdim)
-                y_chunk[:, t] = torch.einsum('bns,bnsd->bnd', C_c[:, ci, t], h)
-            y_chunks.append(y_chunk)
+        for t in range(L):
+            # h = dA * h + dB * x  (outer product)
+            h = dA[:, t, :, :, None] * h + \
+                dB[:, t, :, :, None] * x[:, t, :, None, :]
+            # y = (C * h).sum(dim=s) — avoids einsum overhead
+            y[:, t] = (C[:, t, :, :, None] * h).sum(dim=2)
 
-        y = torch.cat(y_chunks, dim=1)[:, :L]  # remove padding
         return y
 
     def _scan_simple(self, x, A, B, C, dt):

@@ -215,6 +215,7 @@ class DiffuMamba3Config:
     time_conditioning: bool = True  # MDLM defaults False; DiffuMamba uses True
     antithetic_sampling: bool = True
     gradient_checkpointing: bool = True  # recompute blocks during backward to save VRAM
+    flat_elbo_weight: bool = False  # if True, use weight=1 instead of 1/t ELBO weighting
 
 
 # ---------------------------------------------------------------------------
@@ -400,8 +401,11 @@ class DiffuMamba3(nn.Module):
         log_p_x0 = torch.gather(log_probs, dim=-1,
                                 index=x_0.unsqueeze(-1)).squeeze(-1)  # (B, L)
 
-        # ELBO weighting: dsigma / expm1(sigma), shape (B,)
-        weight = dsigma / torch.expm1(sigma)  # = 1/t for log-linear
+        # ELBO weighting: dsigma / expm1(sigma) = 1/t for log-linear
+        if self.config.flat_elbo_weight:
+            weight = torch.ones_like(sigma)  # uniform weight across timesteps
+        else:
+            weight = dsigma / torch.expm1(sigma)
 
         # Loss per position, weighted
         loss_per_pos = -log_p_x0 * weight.unsqueeze(1)  # (B, L)
