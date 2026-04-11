@@ -96,7 +96,8 @@ class TimestepEmbedder(nn.Module):
         )
         args = t.unsqueeze(1).float() * freqs.unsqueeze(0)
         emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        return self.mlp(emb.to(t.dtype))
+        # Cast to model weight dtype (bf16 on GPU, fp32 on CPU)
+        return self.mlp(emb.to(self.mlp[0].weight.dtype))
 
 
 # ---------------------------------------------------------------------------
