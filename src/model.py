@@ -28,6 +28,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,7 @@ class DiffuMamba3Config:
     sampling_eps: float = 1e-3    # min t during training
     time_conditioning: bool = True  # MDLM defaults False; DiffuMamba uses True
     antithetic_sampling: bool = True
+    gradient_checkpointing: bool = True  # recompute blocks during backward to save VRAM
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +292,12 @@ class DiffuMamba3(nn.Module):
         # Timestep conditioning → c (sigma_map MLP already has SiLU)
         c = self.sigma_map(sigma)  # (B, cond_dim)
 
-        # Mamba-3 blocks
+        # Mamba-3 blocks (with optional gradient checkpointing for VRAM savings)
         for block in self.blocks:
-            h = block(h, c)
+            if self.config.gradient_checkpointing and self.training:
+                h = checkpoint(block, h, c, use_reentrant=False)
+            else:
+                h = block(h, c)
 
         # Output with final AdaLN
         h, _ = self.out_adaln(h, c)

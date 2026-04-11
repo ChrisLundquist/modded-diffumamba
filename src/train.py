@@ -19,7 +19,11 @@ import sys
 import time
 import math
 import argparse
+import functools
 from pathlib import Path
+
+# Unbuffered print for background/piped execution
+print = functools.partial(print, flush=True)
 
 import numpy as np
 import torch
@@ -255,9 +259,15 @@ def train(args):
     if device.type == "cuda" and config.dtype == torch.bfloat16:
         model = model.to(dtype=torch.bfloat16)
     n_params = count_parameters(model)
+
+    # torch.compile for faster training (uses Triton on ROCm)
+    if args.compile:
+        print("  Compiling model with torch.compile...")
+        model = torch.compile(model)
+
     print(f"\nModel: {args.config} ({n_params/1e6:.1f}M params)")
     print(f"  d_model={config.d_model}, n_layers={config.n_layers}, "
-          f"seq_len={config.max_seq_len}")
+          f"seq_len={config.max_seq_len}, compile={args.compile}")
     print(f"  time_conditioning={config.time_conditioning}")
 
     # Data (cached locally after first download)
@@ -414,6 +424,8 @@ def parse_args():
     # Training
     p.add_argument("--max_steps", type=int, default=5000)
     p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--compile", action="store_true",
+                   help="Use torch.compile (Triton backend on ROCm, big speedup)")
 
     # Data
     p.add_argument("--data_path", type=str, default=None,
