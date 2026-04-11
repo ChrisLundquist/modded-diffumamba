@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.pt
+*.bin
+results/
+wandb/
+.cache/

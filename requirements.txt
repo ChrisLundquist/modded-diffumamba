@@ -1,0 +1,20 @@
+# Core
+torch>=2.8.0
+numpy
+
+# Mamba-3 (install from source separately):
+# MAMBA_FORCE_BUILD=TRUE pip install --no-cache-dir --force-reinstall \
+#   git+https://github.com/state-spaces/mamba.git --no-build-isolation
+
+# Tokenizer
+tiktoken
+
+# Data
+datasets
+huggingface_hub
+
+# Logging
+wandb
+
+# Flash attention (for hybrid variant, install with Triton backend on AMD):
+# FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" pip install flash-attn --no-build-isolation
