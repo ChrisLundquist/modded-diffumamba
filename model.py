@@ -215,7 +215,8 @@ class DiffuMamba3Config:
     time_conditioning: bool = True  # MDLM defaults False; DiffuMamba uses True
     antithetic_sampling: bool = True
     gradient_checkpointing: bool = True  # recompute blocks during backward to save VRAM
-    flat_elbo_weight: bool = False  # if True, use weight=1 instead of 1/t ELBO weighting
+    loss_weight: str = "elbo"      # "elbo" (1/t), "flat" (1), "minsnr" (clamped 1/t)
+    minsnr_gamma: float = 5.0      # clamp value for Min-SNR (Hang et al. ICCV 2023)
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +260,12 @@ class DiffuMamba3(nn.Module):
         # Noise schedule
         self.noise = LogLinearNoise(eps=c.noise_eps)
 
-        # Init
+        # Init: global init, then re-apply SSM-specific inits (depth-scaled out_proj)
         self.apply(self._init_weights)
+        for block in self.blocks:
+            for ssm in [block.mamba_fwd, block.mamba_bwd]:
+                if hasattr(ssm, '_init_weights'):
+                    ssm._init_weights()
 
     def _init_weights(self, module):
         if isinstance(module, AdaLN):
@@ -301,8 +306,8 @@ class DiffuMamba3(nn.Module):
                 h = block(h, c)
 
         # Output with final AdaLN
-        h, _ = self.out_adaln(h, c)
-        logits = self.lm_head(h)  # (B, L, V)
+        h, gate = self.out_adaln(h, c)
+        logits = self.lm_head(h * gate)  # (B, L, V)
 
         # SUBS parameterization: kill mask logit, normalize, force unmasked to copy
         logits = self._subs_parameterization(logits, x_t)
@@ -401,10 +406,18 @@ class DiffuMamba3(nn.Module):
         log_p_x0 = torch.gather(log_probs, dim=-1,
                                 index=x_0.unsqueeze(-1)).squeeze(-1)  # (B, L)
 
-        # ELBO weighting: dsigma / expm1(sigma) = 1/t for log-linear
-        if self.config.flat_elbo_weight:
-            weight = torch.ones_like(sigma)  # uniform weight across timesteps
-        else:
+        # Loss weighting across timesteps
+        # "elbo": dsigma/expm1(sigma) = 1/t — standard MDLM (upweights low-noise)
+        # "flat": weight=1 — uniform across timesteps
+        # "minsnr": clamp(1/t, max=gamma) — Min-SNR (Hang et al. ICCV 2023)
+        #   Clips extreme weights at low-noise timesteps to reduce gradient conflict
+        lw = self.config.loss_weight
+        if lw == "flat":
+            weight = torch.ones_like(sigma)
+        elif lw == "minsnr":
+            weight = dsigma / torch.expm1(sigma)  # 1/t
+            weight = torch.clamp(weight, max=self.config.minsnr_gamma)
+        else:  # "elbo"
             weight = dsigma / torch.expm1(sigma)
 
         # Loss per position, weighted
@@ -506,12 +519,17 @@ class DiffuMamba3(nn.Module):
 # ---------------------------------------------------------------------------
 
 CONFIGS = {
-    # Tiny: ~2M params, for testing / debugging
+    # Tiny: ~8M params, for testing / debugging
     "tiny": DiffuMamba3Config(
         d_model=128, n_layers=4, d_state=32, headdim=32, expand=2,
         is_mimo=False, mlp_expansion=2, max_seq_len=256, cond_dim=64,
     ),
-    # Small: ~45M params, fast autoresearch experiments on 9070 XT
+    # Quokka: ~36M params, Quokka-optimal for 1B tokens (40-100 tok/param)
+    "quokka": DiffuMamba3Config(
+        d_model=384, n_layers=4, d_state=32, headdim=32, expand=2,
+        is_mimo=False, mlp_expansion=2, max_seq_len=1024, cond_dim=64,
+    ),
+    # Small: ~84M params, fast autoresearch experiments on 9070 XT
     "small": DiffuMamba3Config(
         d_model=512, n_layers=8, d_state=64, headdim=64, expand=2,
         is_mimo=True, mimo_rank=2, chunk_size=32,

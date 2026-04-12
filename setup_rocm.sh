@@ -86,7 +86,7 @@ except Exception as e:
 echo ""
 echo "=== Setup complete ==="
 echo "Activate with: source .venv/bin/activate"
-echo "Or run directly: uv run python3 src/train.py --config small"
+echo "Or run directly: uv run python3 train.py --config small"
 echo ""
 echo "Add to your shell profile:"
 echo '  export FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"'

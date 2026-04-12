@@ -1,96 +1,87 @@
 # DiffuMamba3: Autoresearch on Masked Diffusion LMs
 
-A nanogpt-style research project exploring masked diffusion language models with
-**Mamba-3** backbone and **Muon** optimizer, targeting AMD RX 9070 XT.
+Masked diffusion language model with **bidirectional Mamba-3** backbone and
+**Muon** optimizer, in the style of [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt).
+Targets AMD RX 9070 XT (RDNA 4 / ROCm).
 
-## Motivation
+## Quick Start
 
-DiffuMamba (Singh et al., 2025) showed that replacing the Transformer backbone in
-masked diffusion LMs with bidirectional Mamba-2 yields 8.2x throughput with no quality
-loss. Two natural follow-ups:
+```bash
+# 1. Download pre-tokenized FineWeb-10B (1B tokens, ~2GB)
+python data/get_data.py          # uses huggingface_hub
+# OR
+bash data/get_data.sh            # uses curl (no Python deps)
 
-1. **Mamba-3** (Gu et al., ICLR 2026) — complex-valued states, MIMO, half the state
-   size of Mamba-2 for matching perplexity. Better fit for 16GB consumer GPUs.
+# 2. Train
+python train.py --config small --max_steps 5000
 
-2. **Muon optimizer** (Jordan et al.) — orthogonalized momentum that gave 1.35x speedup
-   in the nanogpt speedrun. Never tested on masked diffusion LMs. The hypothesis: since
-   MDLM training = cross-entropy (not noise prediction), Muon should transfer from LM
-   training.
-
-We combine these in a clean, single-file implementation and use **autoresearch** to
-systematically search for the fastest training configuration.
+# 3. Autoresearch (Muon vs Adam sweep)
+python autoresearch.py --mode compare_optimizers --budget_steps 500
+```
 
 ## Architecture
 
 ```
-Input tokens → Embed → [BiMamba3 Block × N] → Project → Logits
-                              ↑
-                        noise timestep t
+Input tokens -> Embed -> [BiMamba3 Block x N] -> AdaLN -> LM Head -> Logits
+                              ^
+                         sigma(t) timestep
 ```
 
-Each BiMamba3 block:
-- Forward Mamba-3 scan → h_fwd
-- Backward Mamba-3 scan → h_bwd
-- h = h_fwd + h_bwd (additive merge)
-- MLP refinement + residual connection
-- Noise conditioning via adaptive layernorm or embedding addition
+Each BiMamba3 block (following [DiffuMamba](https://arxiv.org/abs/2511.15927)):
+- AdaLN conditioning on noise timestep
+- Forward Mamba scan + backward Mamba scan (additive merge)
+- SwiGLU MLP with gated residual
 
-Diffusion process (MDLM):
-- Forward: progressively mask tokens with [MASK] at rate β(t)
-- Reverse: predict original tokens from partially masked sequence
-- Loss: weighted cross-entropy over masked positions
+Diffusion ([MDLM](https://arxiv.org/abs/2406.07524)):
+- Absorbing-state masked diffusion (tokens -> [MASK] at rate governed by t)
+- Log-linear noise schedule
+- SUBS parameterization (kill mask logit, force unmasked to copy)
+
+## Data
+
+Pre-tokenized FineWeb-10B shards from [kjj0/fineweb10B-gpt2](https://huggingface.co/datasets/kjj0/fineweb10B-gpt2) — same data as modded-nanogpt. Each `.bin` shard is ~200MB (100M GPT-2 tokens).
+
+Alternative: tokenize your own parquets with `python data/tokenize.py`.
+
+## Model Configs
+
+| Config | Params | d_model | layers | seq_len | Use case |
+|--------|--------|---------|--------|---------|----------|
+| tiny   | 8.4M   | 128     | 4      | 256     | Quick HP sweep |
+| quokka | 35.9M  | 384     | 4      | 1024    | 1B token scale |
+| small  | 84.2M  | 512     | 8      | 512     | Medium experiments |
+| base   | 231M   | 768     | 12     | 1024    | Full scale |
+| large  | 350M   | 1024    | 24     | 1024    | Large-scale |
+
+## Files
+
+```
+train.py          # training loop, optimizer, data loading
+model.py          # DiffuMamba3 architecture + MDLM diffusion
+ssm.py            # PureSSM: pure-PyTorch selective scan (no custom kernels)
+autoresearch.py   # automated experiment runner
+data/
+  get_data.py     # download pre-tokenized shards from HF Hub
+  get_data.sh     # curl-based alternative
+  tokenize.py     # tokenize raw parquet -> .bin shards
+ref/              # reference implementations (muon, modded-nanogpt)
+notes/            # research notes, paper summaries
+```
+
+## Key Findings
+
+- **Min-SNR gamma=5** loss weighting consistently beats standard ELBO (HIGH confidence)
+- **Flat ELBO weight + Muon + torch.compile** gave best val_loss in short runs
+- See `HANDOFF.md` for full training recipe and confidence levels
 
 ## Hardware
 
-**AMD RX 9070 XT** (RDNA 4, 16GB VRAM, gfx1201)
-- ROCm 7.2+ / PyTorch 2.8+
-- Flash attention via Triton backend
-- See `notes/rocm-rdna4-rx9070xt-research.md` for full setup guide
-
-## Key Research Questions
-
-1. Does Muon accelerate masked diffusion LM training? (Muon fails for image diffusion
-   but masked diffusion loss = cross-entropy, not noise prediction)
-2. Does Mamba-3's MIMO formulation help with bidirectional processing?
-3. What's the optimal hybrid ratio (Mamba-3 vs attention layers)?
-4. Does soft masking (Hersche et al., ICLR 2026) compound with Muon gains?
-5. Can autoresearch find RDNA4-specific optimizations?
-
-## Papers
-
-See `notes/papers.md` for the full annotated bibliography. Key references:
-
-| Paper | Key Contribution |
-|-------|-----------------|
-| MDLM (Sahoo et al., 2024) | Masked diffusion = mixture of MLM losses |
-| SEDD (Lou et al., 2024) | Score entropy for discrete diffusion |
-| DiffuMamba (Singh et al., 2025) | BiMamba-2 backbone for masked diffusion LMs |
-| Mamba-3 (Lahoti et al., 2026) | Complex states, MIMO, half state size |
-| Muon (Jordan et al., 2024) | Orthogonalized momentum, 1.35x nanogpt speedup |
-| LLaDA (Nie et al., 2025) | Masked diffusion at 8B scale |
-| Soft-Masked DLM (Hersche et al., 2026) | Soft masking improves masked diffusion |
-
-## Project Structure
-
-```
-diffusion-lm-autoresearch/
-├── CLAUDE.md           # Project context for Claude Code
-├── README.md           # This file
-├── notes/
-│   ├── papers.md       # Annotated paper summaries
-│   └── rocm-rdna4-rx9070xt-research.md  # Hardware setup guide
-├── papers/
-│   └── mamba-bidirectional-research-survey.md
-└── src/                # Implementation (TBD)
-    ├── train.py        # Single-file training script (nanogpt style)
-    ├── model.py        # BiMamba3 diffusion model
-    └── autoresearch.py # Automated experiment runner
-```
+AMD RX 9070 XT (16GB VRAM, RDNA 4, gfx1201) via ROCm.
+See `setup_rocm.sh` for environment setup. On WSL2, use the `librocprofiler_stub.so`
+workaround (see `ROCPROFILER_WSL2_BUG.md` in `~/rocm-libraries/`).
 
 ## References
 
-- [MDLM](https://arxiv.org/abs/2406.07524) | [SEDD](https://arxiv.org/abs/2310.16834) | [D3PM](https://arxiv.org/abs/2107.03006)
-- [DiffuMamba](https://arxiv.org/abs/2511.15927) | [Mamba-3](https://arxiv.org/abs/2603.15569)
-- [Muon](https://kellerjordan.github.io/posts/muon/) | [nanogpt-speedrun](https://github.com/KellerJordan/modded-nanogpt)
-- [LLaDA](https://arxiv.org/abs/2502.09992) | [Soft-Masked DLM](https://arxiv.org/abs/2510.17206)
-- [Karpathy autoresearch](https://github.com/karpathy/autoresearch) | [AMD fork](https://github.com/andyluo7/autoresearch)
+- [MDLM](https://arxiv.org/abs/2406.07524) | [DiffuMamba](https://arxiv.org/abs/2511.15927) | [Mamba-3](https://arxiv.org/abs/2603.15569)
+- [Muon](https://kellerjordan.github.io/posts/muon/) | [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt)
+- [LLaDA](https://arxiv.org/abs/2502.09992) | [Min-SNR](https://arxiv.org/abs/2303.09556)

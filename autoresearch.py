@@ -2,20 +2,13 @@
 autoresearch.py — Automated experiment runner (Karpathy autoresearch style)
 
 Runs train.py with different configurations and tracks results.
-Each experiment runs for a fixed time budget (default 5 min),
-and we compare final validation loss to find the best setup.
-
-The key research question: does Muon beat Adam for masked diffusion LMs?
+Each experiment runs for a fixed step budget, and we compare final
+validation loss to find the best setup.
 
 Usage:
-    # Run the Muon vs Adam comparison:
-    python src/autoresearch.py --mode compare_optimizers
-
-    # Run a hyperparameter sweep:
-    python src/autoresearch.py --mode sweep --budget_minutes 5
-
-    # Run a single experiment:
-    python src/autoresearch.py --mode single --config small --optimizer muon
+    python autoresearch.py --mode compare_optimizers
+    python autoresearch.py --mode sweep --budget_steps 500
+    python autoresearch.py --mode single --config small --optimizer muon
 """
 
 import os
@@ -24,13 +17,11 @@ import json
 import time
 import subprocess
 import argparse
-import itertools
 from pathlib import Path
 from datetime import datetime
 
-SCRIPT_DIR = Path(__file__).parent
-TRAIN_SCRIPT = SCRIPT_DIR / "train.py"
-RESULTS_DIR = SCRIPT_DIR.parent / "results"
+TRAIN_SCRIPT = Path(__file__).parent / "train.py"
+RESULTS_DIR = Path(__file__).parent / "results"
 
 
 def run_experiment(name: str, args: dict, budget_steps: int = None) -> dict:
@@ -115,9 +106,12 @@ def compare_optimizers(args):
     experiments = [
         ("adam_baseline", {**base_args, "optimizer": "adam", "adam_lr": 3e-4}),
         ("adam_lr1e3", {**base_args, "optimizer": "adam", "adam_lr": 1e-3}),
-        ("muon_default", {**base_args, "optimizer": "muon", "muon_lr": 0.02, "adam_lr": 3e-4}),
-        ("muon_lr005", {**base_args, "optimizer": "muon", "muon_lr": 0.005, "adam_lr": 3e-4}),
-        ("muon_lr01", {**base_args, "optimizer": "muon", "muon_lr": 0.01, "adam_lr": 3e-4}),
+        ("muon_default", {**base_args, "optimizer": "muon",
+                          "muon_lr": 0.02, "adam_lr": 3e-4}),
+        ("muon_lr005", {**base_args, "optimizer": "muon",
+                        "muon_lr": 0.005, "adam_lr": 3e-4}),
+        ("muon_lr01", {**base_args, "optimizer": "muon",
+                       "muon_lr": 0.01, "adam_lr": 3e-4}),
     ]
 
     results = []
@@ -135,7 +129,6 @@ def compare_optimizers(args):
         print(f"  {r['name']:>20s}: val_loss={r['val_loss']:.4f}, "
               f"time={r['elapsed_seconds']:.0f}s{marker}")
 
-    # Save summary
     summary_path = RESULTS_DIR / "summary.json"
     with open(summary_path, "w") as f:
         json.dump(results, f, indent=2)

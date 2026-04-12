@@ -1,12 +1,30 @@
-venv/
-.venv/
+# Python
 __pycache__/
 *.pyc
 *.egg-info/
 dist/
 build/
+venv/
+.venv/
+
+# Data (download with: python data/get_data.py)
+data/fineweb10B/
+data/fineweb-edu/
+data/*.bin
+*.npy
+*.parquet
+
+# Training artifacts
 *.pt
-*.bin
+*.pth
 results/
 wandb/
 .cache/
+
+# ROCm workaround binary (rebuild from stub_rocprof.c)
+*.so
+
+# Editor
+.vscode/
+*.swp
+*~

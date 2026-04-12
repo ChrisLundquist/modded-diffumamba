@@ -19,7 +19,7 @@ import torch.nn as nn
 from train import zeropower_via_newtonschulz5, MuonAdamW
 
 # Reference implementation
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ref"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ref"))
 from muon_standalone import (
     zeropower_via_newtonschulz5 as ref_ns5,
     muon_update as ref_muon_update,
