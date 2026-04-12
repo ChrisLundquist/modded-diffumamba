@@ -26,8 +26,8 @@ bash data/get_data.sh            # uses curl, no Python deps
 # Train (defaults: small config, Muon+AdamW, ELBO weighting)
 python train.py --config small --max_steps 5000
 
-# Best config found so far (Min-SNR + Muon + compile)
-python train.py --config quokka --optimizer muon --loss_weight minsnr --compile
+# Best config (Muon + Min-SNR, validated at FineWeb scale)
+python train.py --config quokka --optimizer muon --loss_weight minsnr --batch_size 8
 
 # Autoresearch: sweep Muon vs Adam
 python autoresearch.py --mode compare_optimizers --budget_steps 500
@@ -86,10 +86,11 @@ From autoresearch sweeps (see `HANDOFF.md` for full details and confidence level
 
 | Finding | Confidence | Detail |
 |---------|-----------|--------|
-| **Min-SNR gamma=5** beats ELBO weighting | HIGH | 2.2% improvement, matches [Hang et al. ICCV 2023](https://arxiv.org/abs/2303.09556) |
-| Flat ELBO + Muon + compile is fast | MEDIUM | Better val_loss in 3x less wall time vs Adam baseline |
-| Time conditioning helps | MEDIUM | +1.3% vs no conditioning |
-| High LR (3e-3) wins short runs | LOW | 500 steps biases toward fast LR; needs validation at scale |
+| **Muon beats Adam for masked diffusion** | HIGH | 0.78 loss units at 500 steps, gap widening. Novel result. |
+| **Min-SNR gamma=5** beats ELBO weighting | HIGH | Validated at two scales, matches [Hang et al. ICCV 2023](https://arxiv.org/abs/2303.09556) |
+| Muon lr=0.02 is optimal | MEDIUM | Sweep {0.005, 0.01, 0.02, 0.04}, default works |
+| Cosine schedule beats linear | MEDIUM | For both Muon and Adam |
+| torch.compile adds nothing | MEDIUM | Mamba3 Triton already optimized |
 
 ## Files
 

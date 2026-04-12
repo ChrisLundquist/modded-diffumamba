@@ -540,14 +540,14 @@ def parse_args():
     p = argparse.ArgumentParser(description="DiffuMamba3 Training")
 
     # Model
-    p.add_argument("--config", type=str, default="small",
+    p.add_argument("--config", type=str, default="quokka",
                    choices=list(CONFIGS.keys()), help="Model config")
     p.add_argument("--n_layers", type=int, default=None)
     p.add_argument("--d_model", type=int, default=None)
     p.add_argument("--seq_len", type=int, default=None)
     p.add_argument("--no_time_cond", action="store_true",
                    help="Disable timestep conditioning (MDLM default)")
-    p.add_argument("--loss_weight", type=str, default="elbo",
+    p.add_argument("--loss_weight", type=str, default="minsnr",
                    choices=["elbo", "flat", "minsnr"],
                    help="Loss weighting: elbo (1/t), flat (1), minsnr (clamped 1/t)")
     p.add_argument("--minsnr_gamma", type=float, default=5.0,
@@ -562,10 +562,10 @@ def parse_args():
     p.add_argument("--muon_wd", type=float, default=0.01)
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
-    p.add_argument("--adam_beta2", type=float, default=0.95,
-                   help="Adam beta2 (DiffuMamba=0.95, MDLM=0.999)")
+    p.add_argument("--adam_beta2", type=float, default=0.999,
+                   help="Adam beta2 (MDLM=0.999, DiffuMamba=0.95)")
     p.add_argument("--grad_clip", type=float, default=1.0)
-    p.add_argument("--warmup_steps", type=int, default=200)
+    p.add_argument("--warmup_steps", type=int, default=50)
     p.add_argument("--lr_schedule", type=str, default="cosine",
                    choices=["cosine", "linear"],
                    help="LR schedule: cosine (DiffuMamba) or linear cooldown")

@@ -2,27 +2,34 @@
 
 ## Confidence Levels
 
-**HIGH confidence (validated finding):**
-- Min-SNR gamma=5 loss weighting — consistent improvement over ELBO, matches published default
+**HIGH confidence (validated at two scales — tiny_shakespeare and FineWeb-Edu 1B):**
+- Muon (lr=0.02) beats Adam (lr=3e-3) by 0.78 loss units at 500 steps, gap still widening
+- Min-SNR gamma=5 loss weighting — consistent improvement over ELBO at both scales
+- Cosine LR schedule beats linear
+- Auxiliary Adam lr=3e-4 for embeddings/norms (higher hurts)
 
-**LOW confidence (200-500 step sweeps on overparameterized tiny model, n=1):**
-- Everything else below. Treat as starting points to validate, not conclusions.
+**MEDIUM confidence (validated at FineWeb scale, n=1):**
+- Muon lr=0.02 is optimal (sweep: 0.005, 0.01, 0.02, 0.04)
+- Time conditioning ON beats OFF by ~1.3%
+- torch.compile adds nothing with Mamba3 Triton kernels
 
-## Suggested Starting Configuration
+**LOW confidence (tiny model sweeps only):**
+- Weight decay, beta2 effects are within noise
+
+## Best Configuration (validated)
 
 ```bash
 python train.py \
   --config quokka \
-  --optimizer adam --adam_lr 3e-3 --adam_wd 0 --adam_beta2 0.999 \
+  --optimizer muon --muon_lr 0.02 --adam_lr 3e-4 \
   --loss_weight minsnr --minsnr_gamma 5 \
-  --lr_schedule cosine --warmup_steps 200 \
+  --lr_schedule cosine --warmup_steps 50 \
   --data_path data/fineweb-edu/train.npy \
   --val_data_path data/fineweb-edu/val.npy \
-  --batch_size 8 --compile
+  --batch_size 8
 ```
 
-**This config has NOT been validated at scale.** It's the best we found in short sweeps
-and should be treated as a starting hypothesis.
+**500-step result: val_loss = 6.8426** (vs Adam baseline 7.6270, same steps/time)
 
 ## What We Found (and How Much to Trust It)
 

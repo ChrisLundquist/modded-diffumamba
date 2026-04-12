@@ -17,7 +17,7 @@ data/*.bin
 # Training artifacts
 *.pt
 *.pth
-results/
+results/*.json
 wandb/
 .cache/
 

@@ -234,7 +234,7 @@ class DiffuMamba3Config:
     time_conditioning: bool = True  # MDLM defaults False; DiffuMamba uses True
     antithetic_sampling: bool = True
     gradient_checkpointing: bool = True  # recompute blocks during backward to save VRAM
-    loss_weight: str = "elbo"      # "elbo" (1/t), "flat" (1), "minsnr" (clamped 1/t)
+    loss_weight: str = "minsnr"    # "elbo" (1/t), "flat" (1), "minsnr" (clamped 1/t)
     minsnr_gamma: float = 5.0      # clamp value for Min-SNR (Hang et al. ICCV 2023)
 
 
