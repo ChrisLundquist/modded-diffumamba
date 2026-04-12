@@ -32,14 +32,26 @@ from torch.utils.checkpoint import checkpoint
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
-# SSM backend: Mamba-3 (custom kernels) → PureSSM (pure PyTorch fallback)
+# SSM backend: Mamba-3 → Mamba-2 (Triton SSD) → PureSSM (pure PyTorch)
+#
+# mamba_ssm's __init__.py unconditionally imports selective_scan_cuda which
+# doesn't exist without a CUDA build. Import the modules directly to bypass.
 # ---------------------------------------------------------------------------
+
+SSM_BACKEND = "pure"
 
 try:
     from mamba_ssm.modules.mamba3 import Mamba3
     SSM_BACKEND = "mamba3"
-except ImportError:
-    SSM_BACKEND = "pure"
+except (ImportError, ModuleNotFoundError):
+    Mamba3 = None
+
+if SSM_BACKEND == "pure":
+    try:
+        from mamba_ssm.modules.mamba2 import Mamba2
+        SSM_BACKEND = "mamba2"
+    except (ImportError, ModuleNotFoundError):
+        Mamba2 = None
 
 from ssm import PureSSM
 
@@ -153,7 +165,7 @@ class BiMamba3Block(nn.Module):
                  mlp_expansion: int = 2, dtype=torch.bfloat16):
         super().__init__()
 
-        # Build SSM layers: Mamba-3 (fast, needs custom kernels) or PureSSM (portable)
+        # Build SSM layers: Mamba-3 → Mamba-2 (Triton SSD) → PureSSM (fallback)
         if SSM_BACKEND == "mamba3":
             ssm_kwargs = dict(
                 d_model=d_model, d_state=d_state, headdim=headdim,
@@ -162,8 +174,15 @@ class BiMamba3Block(nn.Module):
             )
             self.mamba_fwd = Mamba3(**ssm_kwargs)
             self.mamba_bwd = Mamba3(**ssm_kwargs)
+        elif SSM_BACKEND == "mamba2":
+            ssm_kwargs = dict(
+                d_model=d_model, d_state=d_state, headdim=headdim,
+                expand=expand, chunk_size=chunk_size,
+            )
+            self.mamba_fwd = Mamba2(**ssm_kwargs)
+            self.mamba_bwd = Mamba2(**ssm_kwargs)
         else:
-            # PureSSM: proper selective SSM in pure PyTorch (works on any GPU)
+            # PureSSM: selective SSM in pure PyTorch (works on any GPU)
             ssm_kwargs = dict(d_model=d_model, d_state=d_state, expand=expand)
             self.mamba_fwd = PureSSM(**ssm_kwargs)
             self.mamba_bwd = PureSSM(**ssm_kwargs)
@@ -299,8 +318,12 @@ class DiffuMamba3(nn.Module):
         c = self.sigma_map(sigma)  # (B, cond_dim)
 
         # Mamba-3 blocks (with optional gradient checkpointing for VRAM savings)
+        # Note: checkpointing is incompatible with Mamba3/Mamba2 custom autograd
+        use_ckpt = (self.config.gradient_checkpointing
+                    and self.training
+                    and SSM_BACKEND == "pure")
         for block in self.blocks:
-            if self.config.gradient_checkpointing and self.training:
+            if use_ckpt:
                 h = checkpoint(block, h, c, use_reentrant=False)
             else:
                 h = block(h, c)
