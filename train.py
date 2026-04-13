@@ -341,7 +341,7 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
         param_groups = [
             dict(params=muon_params, use_muon=True,
                  lr=args.muon_lr, momentum=args.muon_momentum,
-                 weight_decay=args.muon_wd),
+                 weight_decay=args.muon_wd, ns_steps=args.ns_steps),
             dict(params=adam_params, use_muon=False,
                  lr=args.adam_lr, betas=(0.9, args.adam_beta2),
                  weight_decay=args.adam_wd),
@@ -560,6 +560,8 @@ def parse_args():
     p.add_argument("--muon_lr", type=float, default=0.02)
     p.add_argument("--muon_momentum", type=float, default=0.95)
     p.add_argument("--muon_wd", type=float, default=0.01)
+    p.add_argument("--ns_steps", type=int, default=5,
+                   help="Newton-Schulz iterations for Muon (default 5)")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,
