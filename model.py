@@ -520,7 +520,7 @@ class DiffuMamba3(nn.Module):
 
             # Move chances for current and next step
             move_chance_t = self.noise.move_chance(t)   # scalar
-            move_chance_s = self.noise.move_chance(t - dt)  # scalar (next = cleaner)
+            move_chance_s = self.noise.move_chance(t - dt).clamp(min=0)  # scalar (next = cleaner)
 
             # Get model predictions (with caching)
             if p_x0_cache is None:

@@ -232,7 +232,7 @@ class MuonAdamW(torch.optim.Optimizer):
 
             # Nesterov momentum
             buf.lerp_(g, 1 - beta)
-            update = g.lerp_(buf, beta)
+            update = g.lerp(buf, beta)
 
             # Flatten if needed (conv filters)
             orig_shape = update.shape
