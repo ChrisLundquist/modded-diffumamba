@@ -312,23 +312,6 @@ class PureSSM(nn.Module):
         return y
 
 
-class BiPureSSM(nn.Module):
-    """Bidirectional PureSSM — two independent scans, additive merge.
-
-    Drop-in replacement for BiMamba3Block's SSM layers.
-    """
-    def __init__(self, d_model: int, d_state: int = 64, expand: int = 2,
-                 **kwargs):
-        super().__init__()
-        self.ssm_fwd = PureSSM(d_model, d_state=d_state, expand=expand, **kwargs)
-        self.ssm_bwd = PureSSM(d_model, d_state=d_state, expand=expand, **kwargs)
-
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        h_fwd = self.ssm_fwd(x)
-        h_bwd = self.ssm_bwd(x.flip(1)).flip(1)
-        return h_fwd + h_bwd
-
-
 if __name__ == "__main__":
     print("=== PureSSM Tests ===\n")
 
@@ -347,13 +330,11 @@ if __name__ == "__main__":
     # Test that scan and scan_simple give same results
     ssm2 = PureSSM(d_model=D, d_state=32, expand=2, chunk_size=32)
     x2 = torch.randn(B, 64, D)
-    # Run both scan paths
     proj = ssm2.in_proj(x2)
     d = ssm2.d_inner
     n = ssm2.nheads
     s = ssm2.d_state
     x_inner = proj[:, :, :d]
-    z = proj[:, :, d:2*d]
     bc_dt = proj[:, :, 2*d:].view(B, 64, n, 2*s + 1)
     B_p = bc_dt[:, :, :, :s]
     C_p = bc_dt[:, :, :, s:2*s]
@@ -371,38 +352,17 @@ if __name__ == "__main__":
     assert diff < 1e-4, f"Scans diverge: {diff}"
     print("  Scan consistency: OK")
 
-    # Test bidirectional
-    bi = BiPureSSM(d_model=D, d_state=64, expand=2)
-    y_bi = bi(x)
-    print(f"\nBiPureSSM: input {x.shape} → output {y_bi.shape}")
-    assert y_bi.shape == x.shape
-    assert not torch.isnan(y_bi).any()
-    print("  Shape and NaN check: OK")
-
     # Test gradient flow
     x_grad = torch.randn(B, L, D, requires_grad=True)
-    y_grad = bi(x_grad)
+    ssm3 = PureSSM(d_model=D, d_state=64, expand=2)
+    y_grad = ssm3(x_grad)
     loss = y_grad.sum()
     loss.backward()
     assert x_grad.grad is not None
     assert not torch.isnan(x_grad.grad).any()
     print("  Gradient flow: OK")
 
-    # Param count
-    n_params = sum(p.numel() for p in bi.parameters())
-    print(f"  BiPureSSM params: {n_params/1e6:.1f}M (d_model={D})")
-
-    # Speed test
-    import time
-    bi = BiPureSSM(d_model=512, d_state=64, expand=2)
-    x_bench = torch.randn(4, 512, 512)
-    # Warmup
-    for _ in range(3):
-        _ = bi(x_bench)
-    t0 = time.perf_counter()
-    for _ in range(10):
-        _ = bi(x_bench)
-    elapsed = (time.perf_counter() - t0) / 10
-    print(f"\n  Speed (B=4, L=512, D=512, CPU): {elapsed*1000:.0f}ms/fwd")
+    n_params = sum(p.numel() for p in ssm3.parameters())
+    print(f"  PureSSM params: {n_params/1e6:.1f}M (d_model={D})")
 
     print("\nAll PureSSM tests passed.")

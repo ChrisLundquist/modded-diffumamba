@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # SSM backend: Mamba-3 → Mamba-2 (Triton SSD) → PureSSM (pure PyTorch)
@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 
 SSM_BACKEND = "pure"
+SSM_MIMO_OK = False  # whether Mamba3 MIMO path works (separate tilelang kernel)
 
 
 def _probe_ssm(cls, label, **kwargs):
@@ -58,12 +59,15 @@ def _probe_ssm(cls, label, **kwargs):
 
 try:
     from mamba_ssm.modules.mamba3 import Mamba3
-    # Probe both non-MIMO and MIMO paths — MIMO uses a separate tilelang kernel
     if _probe_ssm(Mamba3, "Mamba3", d_model=64, d_state=32, headdim=32, expand=2,
-                  chunk_size=16) \
-       and _probe_ssm(Mamba3, "Mamba3-MIMO", d_model=64, d_state=32, headdim=32,
-                      expand=2, is_mimo=True, mimo_rank=4, chunk_size=16):
+                  chunk_size=16):
         SSM_BACKEND = "mamba3"
+        # MIMO uses a separate tilelang kernel that may not work on all GPUs
+        SSM_MIMO_OK = _probe_ssm(Mamba3, "Mamba3-MIMO", d_model=64, d_state=32,
+                                 headdim=32, expand=2, is_mimo=True, mimo_rank=4,
+                                 chunk_size=16)
+        if not SSM_MIMO_OK:
+            print("[SSM] Mamba3 available (non-MIMO only)")
     else:
         Mamba3 = None
 except Exception as e:
@@ -191,14 +195,17 @@ class BiMamba3Block(nn.Module):
     def __init__(self, d_model: int, cond_dim: int, d_state: int = 128,
                  headdim: int = 64, expand: int = 2, is_mimo: bool = True,
                  mimo_rank: int = 4, chunk_size: int = 16,
-                 mlp_expansion: int = 2, dtype=torch.bfloat16):
+                 mlp_expansion: int = 2):
         super().__init__()
 
         # Build SSM layers: Mamba-3 → Mamba-2 (Triton SSD) → PureSSM (fallback)
+        # If MIMO kernels are broken, use Mamba3 without MIMO (still much faster than PureSSM)
         if SSM_BACKEND == "mamba3":
+            use_mimo = is_mimo and SSM_MIMO_OK
             ssm_kwargs = dict(
                 d_model=d_model, d_state=d_state, headdim=headdim,
-                expand=expand, is_mimo=is_mimo, mimo_rank=mimo_rank,
+                expand=expand, is_mimo=use_mimo,
+                **(dict(mimo_rank=mimo_rank) if use_mimo else {}),
                 chunk_size=chunk_size,
             )
             self.mamba_fwd = Mamba3(**ssm_kwargs)
@@ -254,7 +261,6 @@ class DiffuMamba3Config:
     mlp_expansion: int = 2
     max_seq_len: int = 1024
     cond_dim: int = 128           # timestep conditioning dim
-    dtype: torch.dtype = torch.bfloat16
 
     # Diffusion
     mask_token_id: int = 50257    # first unused id after GPT-2 vocab
@@ -293,7 +299,6 @@ class DiffuMamba3(nn.Module):
                 d_state=c.d_state, headdim=c.headdim, expand=c.expand,
                 is_mimo=c.is_mimo, mimo_rank=c.mimo_rank,
                 chunk_size=c.chunk_size, mlp_expansion=c.mlp_expansion,
-                dtype=c.dtype,
             )
             for _ in range(c.n_layers)
         ])

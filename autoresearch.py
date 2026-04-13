@@ -11,7 +11,6 @@ Usage:
     python autoresearch.py --mode single --config small --optimizer muon
 """
 
-import os
 import sys
 import json
 import time
@@ -19,7 +18,6 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-TRAIN_SCRIPT = Path(__file__).parent / "train.py"
 RESULTS_DIR = Path(__file__).parent / "results"
 
 
