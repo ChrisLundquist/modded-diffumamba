@@ -40,17 +40,46 @@ from dataclasses import dataclass, field
 
 SSM_BACKEND = "pure"
 
+
+def _probe_ssm(cls, label, **kwargs):
+    """Try a small forward pass to verify the backend works at runtime."""
+    import torch
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        m = cls(**kwargs).to(device)
+        x = torch.randn(1, 16, kwargs["d_model"], device=device)
+        _ = m(x)
+        del m, x
+        return True
+    except Exception as e:
+        print(f"[SSM] {label} probe failed: {e}")
+        return False
+
+
 try:
     from mamba_ssm.modules.mamba3 import Mamba3
-    SSM_BACKEND = "mamba3"
-except (ImportError, ModuleNotFoundError):
+    # Probe both non-MIMO and MIMO paths — MIMO uses a separate tilelang kernel
+    if _probe_ssm(Mamba3, "Mamba3", d_model=64, d_state=32, headdim=32, expand=2,
+                  chunk_size=16) \
+       and _probe_ssm(Mamba3, "Mamba3-MIMO", d_model=64, d_state=32, headdim=32,
+                      expand=2, is_mimo=True, mimo_rank=4, chunk_size=16):
+        SSM_BACKEND = "mamba3"
+    else:
+        Mamba3 = None
+except Exception as e:
+    print(f"[SSM] Mamba3 import failed: {e}")
     Mamba3 = None
 
 if SSM_BACKEND == "pure":
     try:
         from mamba_ssm.modules.mamba2 import Mamba2
-        SSM_BACKEND = "mamba2"
-    except (ImportError, ModuleNotFoundError):
+        if _probe_ssm(Mamba2, "Mamba2", d_model=64, d_state=32, headdim=32,
+                      expand=2, chunk_size=16):
+            SSM_BACKEND = "mamba2"
+        else:
+            Mamba2 = None
+    except Exception as e:
+        print(f"[SSM] Mamba2 import failed: {e}")
         Mamba2 = None
 
 from ssm import PureSSM
@@ -170,7 +199,7 @@ class BiMamba3Block(nn.Module):
             ssm_kwargs = dict(
                 d_model=d_model, d_state=d_state, headdim=headdim,
                 expand=expand, is_mimo=is_mimo, mimo_rank=mimo_rank,
-                chunk_size=chunk_size, dtype=dtype,
+                chunk_size=chunk_size,
             )
             self.mamba_fwd = Mamba3(**ssm_kwargs)
             self.mamba_bwd = Mamba3(**ssm_kwargs)
@@ -578,6 +607,9 @@ def count_parameters(model: nn.Module) -> int:
 
 
 if __name__ == "__main__":
+    # Force PureSSM for CPU smoke test (Mamba3/Mamba2 need Triton/GPU)
+    SSM_BACKEND = "pure"
+
     # Quick smoke test
     print("=== DiffuMamba3 Model Configs ===")
     for name, cfg in CONFIGS.items():

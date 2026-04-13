@@ -45,7 +45,7 @@ class PureSSM(nn.Module):
         chunk_size: chunk size for parallel scan (default 64)
     """
     def __init__(self, d_model: int, d_state: int = 64, expand: int = 2,
-                 d_conv: int = 4, nheads: int = None, chunk_size: int = 64,
+                 d_conv: int = 4, nheads: int = None, chunk_size: int = 32,
                  **kwargs):  # absorb extra kwargs for API compat
         super().__init__()
         self.d_model = d_model
@@ -148,11 +148,19 @@ class PureSSM(nn.Module):
     def _scan(self, x: torch.Tensor, A: torch.Tensor,
               B: torch.Tensor, C: torch.Tensor,
               dt: torch.Tensor) -> torch.Tensor:
-        """Selective scan — flat sequential (no chunking overhead).
+        """Selective scan — chunked parallel for GPU efficiency.
 
-        The recurrence h_t = dA_t * h_{t-1} + dB_t * x_t is inherently
-        sequential, so chunking adds overhead without parallelism benefit.
-        This flat loop is simpler and more torch.compile friendly.
+        Two-pass approach:
+        Pass 1: Process all chunks in parallel (folded into batch dim) with
+                zero initial state. Record final states and cumulative dA products.
+                Sequential depth: chunk_size (not L).
+        Pass 2: Propagate inter-chunk initial states (sequential over n_chunks).
+                Then re-run all chunks in parallel with correct initial states.
+                Sequential depth: n_chunks + chunk_size.
+
+        Total sequential depth: ~2*chunk_size + L/chunk_size ≈ 2*sqrt(L) optimal.
+        For L=1024, chunk_size=64: depth = 128+16 = 144 vs 1024 for flat scan.
+        The key win: each sequential step processes B*n_chunks items in parallel.
 
         Args:
             x:  (B, L, n, headdim) — input values
@@ -167,21 +175,114 @@ class PureSSM(nn.Module):
         B_sz, L, n, hdim = x.shape
         s = A.shape[1]
         device = x.device
+        C_size = self.chunk_size
 
         # Discretize: dA = exp(A * dt), dB = B * dt
         dt_exp = dt.unsqueeze(-1)  # (B, L, n, 1)
         dA = torch.exp(A.view(1, 1, n, s) * dt_exp)  # (B, L, n, s)
         dB = B * dt_exp  # (B, L, n, s)
 
-        # Pre-allocate output
+        # For short sequences, just do flat scan
+        if L <= C_size:
+            return self._scan_flat(x, dA, dB, C)
+
+        # Pad to multiple of chunk_size
+        n_chunks = (L + C_size - 1) // C_size
+        pad = n_chunks * C_size - L
+        if pad > 0:
+            x = F.pad(x, (0, 0, 0, 0, 0, pad))
+            dA = F.pad(dA, (0, 0, 0, 0, 0, pad), value=1.0)
+            dB = F.pad(dB, (0, 0, 0, 0, 0, pad))
+            C = F.pad(C, (0, 0, 0, 0, 0, pad))
+
+        # Reshape: fold chunk dim into batch → (B*n_chunks, C_size, n, ...)
+        x_c = x.reshape(B_sz * n_chunks, C_size, n, hdim)
+        dA_c = dA.reshape(B_sz * n_chunks, C_size, n, s)
+        dB_c = dB.reshape(B_sz * n_chunks, C_size, n, s)
+        C_c = C.reshape(B_sz * n_chunks, C_size, n, s)
+
+        # Pass 1: parallel intra-chunk scan (zero initial state)
+        # All B*n_chunks chunks processed simultaneously, sequential over C_size
+        BN = B_sz * n_chunks
+        h = torch.zeros(BN, n, s, hdim, device=device, dtype=x.dtype)
+        # We need final states and cumulative dA products
+        y_raw = torch.zeros(BN, C_size, n, hdim, device=device, dtype=x.dtype)
+        dA_prod = torch.ones(BN, n, s, device=device, dtype=dA.dtype)
+
+        for t in range(C_size):
+            h = dA_c[:, t, :, :, None] * h + \
+                dB_c[:, t, :, :, None] * x_c[:, t, :, None, :]
+            y_raw[:, t] = (C_c[:, t, :, :, None] * h).sum(dim=2)
+            dA_prod = dA_c[:, t] * dA_prod
+
+        # Extract final states per chunk: (B, n_chunks, n, s, hdim)
+        chunk_finals = h.reshape(B_sz, n_chunks, n, s, hdim)
+        chunk_dA_prods = dA_prod.reshape(B_sz, n_chunks, n, s)
+
+        # Pass 2a: propagate initial states across chunks (sequential over n_chunks)
+        # Build as a list to avoid in-place indexed assignment on autograd graph
+        h_init_list = [torch.zeros(B_sz, n, s, hdim, device=device, dtype=x.dtype)]
+        for ci in range(1, n_chunks):
+            h_next = chunk_dA_prods[:, ci-1, :, :, None] * h_init_list[ci-1] + \
+                     chunk_finals[:, ci-1]
+            h_init_list.append(h_next)
+        h_inits = torch.stack(h_init_list, dim=1)  # (B, n_chunks, n, s, hdim)
+
+        # Pass 2b: correction — add contribution of initial state to outputs
+        # For chunk ci with initial state h_init, the correction to output at
+        # intra-chunk position t is: sum_s(C[t,s] * (cumulative_dA[0..t] * h_init)[s])
+        # We can compute this efficiently by scanning again with h_init
+        # But only if h_init is nonzero (skip chunk 0)
+        if n_chunks > 1:
+            # Fold h_inits into batch for parallel correction scan
+            # Skip chunk 0 (zero init), process chunks 1..n_chunks-1
+            h_init_flat = h_inits[:, 1:].reshape(B_sz * (n_chunks - 1), n, s, hdim)
+            dA_corr = dA_c.reshape(B_sz, n_chunks, C_size, n, s)[:, 1:].reshape(
+                B_sz * (n_chunks - 1), C_size, n, s)
+            C_corr = C_c.reshape(B_sz, n_chunks, C_size, n, s)[:, 1:].reshape(
+                B_sz * (n_chunks - 1), C_size, n, s)
+
+            # Scan the initial state through the chunk's dA sequence
+            h_corr = h_init_flat  # (B*(n_chunks-1), n, s, hdim)
+            y_correction = torch.zeros(B_sz * (n_chunks - 1), C_size, n, hdim,
+                                       device=device, dtype=x.dtype)
+            for t in range(C_size):
+                h_corr = dA_corr[:, t, :, :, None] * h_corr
+                y_correction[:, t] = (C_corr[:, t, :, :, None] * h_corr).sum(dim=2)
+
+            # Add corrections to y_raw for chunks 1..n_chunks-1
+            y_raw_reshaped = y_raw.reshape(B_sz, n_chunks, C_size, n, hdim).clone()
+            y_raw_reshaped[:, 1:] = y_raw_reshaped[:, 1:] + y_correction.reshape(
+                B_sz, n_chunks - 1, C_size, n, hdim)
+            y_raw = y_raw_reshaped.reshape(BN, C_size, n, hdim)
+
+        # Reshape back: (B, L_padded, n, hdim) → trim to (B, L, n, hdim)
+        y = y_raw.reshape(B_sz, n_chunks * C_size, n, hdim)
+        return y[:, :L]
+
+    def _scan_flat(self, x: torch.Tensor, dA: torch.Tensor,
+                   dB: torch.Tensor, C: torch.Tensor) -> torch.Tensor:
+        """Flat sequential scan (for short sequences or reference).
+
+        Args:
+            x:  (B, L, n, headdim) — input values
+            dA: (B, L, n, s)       — discretized decay
+            dB: (B, L, n, s)       — discretized input gate
+            C:  (B, L, n, s)       — output gate
+
+        Returns:
+            y:  (B, L, n, headdim) — output values
+        """
+        B_sz, L, n, hdim = x.shape
+        s = dA.shape[-1]
+        device = x.device
+
         y = torch.zeros(B_sz, L, n, hdim, device=device, dtype=x.dtype)
         h = torch.zeros(B_sz, n, s, hdim, device=device, dtype=x.dtype)
 
         for t in range(L):
-            # h = dA * h + dB * x  (outer product)
             h = dA[:, t, :, :, None] * h + \
                 dB[:, t, :, :, None] * x[:, t, :, None, :]
-            # y = (C * h).sum(dim=s) — avoids einsum overhead
             y[:, t] = (C[:, t, :, :, None] * h).sum(dim=2)
 
         return y
