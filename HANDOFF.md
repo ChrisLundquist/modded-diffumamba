@@ -2,140 +2,127 @@
 
 ## Confidence Levels
 
-**HIGH confidence (validated at two scales — tiny_shakespeare and FineWeb-Edu 1B):**
-- Muon (lr=0.02) beats Adam (lr=3e-3) by 0.78 loss units at 500 steps, gap still widening
-- Min-SNR gamma=5 loss weighting — consistent improvement over ELBO at both scales
-- Cosine LR schedule beats linear
+**HIGH confidence (validated at 5000 steps on FineWeb-10B, Mamba3 Triton):**
+- Muon (lr=0.02) beats Adam (lr=3e-4) by 0.43 nats at 5000 steps, gap still widening
+- Min-SNR gamma=1.5 is Muon-optimal loss weighting (gamma sweep: 7 values)
+- Cosine LR schedule, no time conditioning
 - Auxiliary Adam lr=3e-4 for embeddings/norms (higher hurts)
 
-**MEDIUM confidence (validated at FineWeb scale, n=1):**
+**MEDIUM confidence (validated at 1000 steps, n=1):**
 - Muon lr=0.02 is optimal (sweep: 0.005, 0.01, 0.02, 0.04)
-- Time conditioning ON beats OFF by ~1.3%
-- torch.compile adds nothing with Mamba3 Triton kernels
+- Gamma=1.5 is Muon-specific — Adam does slightly better with gamma=5
+- Mamba3 Triton (non-MIMO) works on RDNA4 at 58k tok/s steady-state
 
-**LOW confidence (tiny model sweeps only):**
+**LOW confidence (single seed, short training):**
 - Weight decay, beta2 effects are within noise
+- NS iteration count interaction (probe running)
 
-## Best Configuration (validated)
+## Best Configuration (validated at 5000 steps)
 
 ```bash
 python train.py \
   --config quokka \
   --optimizer muon --muon_lr 0.02 --adam_lr 3e-4 \
-  --loss_weight minsnr --minsnr_gamma 5 \
-  --lr_schedule cosine --warmup_steps 50 \
-  --data_path data/fineweb-edu/train.npy \
-  --val_data_path data/fineweb-edu/val.npy \
-  --batch_size 8
+  --loss_weight minsnr --minsnr_gamma 1.5 \
+  --lr_schedule cosine --warmup_steps 200 \
+  --no_time_cond --batch_size 8 --max_steps 5000
 ```
 
-**500-step result: val_loss = 6.8426** (vs Adam baseline 7.6270, same steps/time)
+**5000-step results (quokka 31.5M, FineWeb-10B, Mamba3 Triton non-MIMO):**
 
-## What We Found (and How Much to Trust It)
+| Config | val_loss | vs best |
+|--------|----------|---------|
+| **Muon + gamma=1.5** | **5.52** | — |
+| Muon + flat | 5.62 | +0.10 |
+| Adam + minsnr gamma=5 | 5.95 | +0.43 |
 
-### Min-SNR gamma=5 (HIGH confidence)
-- Clamps the ELBO weight `1/t` at `max=5`
-- 2.2% better than standard ELBO across multiple runs
-- Clear U-shaped gamma sweep: {1, 2, 3, **5**, 8, 10}
-- Matches Hang et al. ICCV 2023 default exactly
-- Zero wall-clock overhead
-- **This is our most reliable finding.**
+## Key Finding: Muon-Optimal Loss Weighting
 
-### Learning Rate (LOW confidence)
-- Our sweep at 500 steps showed: 1e-4 << 3e-4 << 1e-3 << 3e-3
-- But 500 steps strongly biases toward high LR — fast early, may diverge later
-- DiffuMamba uses 1e-4, MDLM uses 3e-4, Quokka uses 2e-4 (all for long training)
-- **Start with our 3e-3 but be ready to reduce. Try 1e-3 and 3e-4 as well.**
+**Muon needs a specific loss weighting to work well on masked diffusion.**
 
-### Optimizer: Adam vs Muon (UNRELIABLE)
-- We found Adam beat Muon on 84M model / 369K tokens / broken LR schedule
-- Another agent found Muon DOES help at proper scale with a transformer
-- Our test conditions were bad — wrong model size, broken warmup, wrong LR
-- **Do not trust our "Muon doesn't help" claim. Test it yourself.**
+Gamma sweep at 1000 steps (quokka, FineWeb-10B, Mamba3 Triton):
 
-### Weight Decay (LOW confidence)
-- wd=0 won in our 500-step sweep (matching MDLM)
-- But WD is a regularizer — its effect is invisible in short training
-- DiffuMamba uses wd=0.1, Quokka recommends nonzero WD for long runs
-- **Sweep wd={0, 0.01, 0.1} at your training length.**
+| gamma | val_loss | note |
+|-------|----------|------|
+| **1.5** | **6.39** | **Muon-optimal sweet spot** |
+| 2.0 | 6.41 | close second |
+| 10.0 | 6.56 | |
+| 5.0 | 7.26 | standard Min-SNR — bad for Muon |
+| 1.0 | 7.29 | too tight |
+| 3.0 | 7.57 | |
+| flat | 7.60 | no reweighting — worst |
 
-### LR Schedule (LOW confidence)
-- Cosine beat constant in our sweep
-- Another agent found constant better for transformers
-- At 500 steps, the schedule shape barely matters
-- **Test both. Quokka uses Warmup-Stable-Decay.**
+**Why gamma=1.5?** Muon's Newton-Schulz orthogonalization equalizes gradient singular
+values. ELBO weighting (1/t) creates extreme gradient scale variance across timesteps,
+conflicting with this equalization. Flat weighting avoids the conflict but discards
+useful signal about which timesteps are most informative. Gamma=1.5 is the sweet spot:
+just enough reweighting to help, but not enough to corrupt Muon's momentum buffer.
 
-### beta2 (NEGLIGIBLE effect)
-- 0.999 vs 0.95 showed <0.05 difference, within noise at n=1
-- **Doesn't matter. Use either.**
+**This is Muon-specific.** Adam does slightly better with gamma=5 (standard Min-SNR).
+Gamma=1.5 does not help Adam at 1000 steps (6.79 vs 6.77 for gamma=5).
 
-### Time Conditioning (MEDIUM confidence)
-- ON beat OFF by 1.3% on one run
-- DiffuMamba uses it, MDLM doesn't
-- **Keep it on.**
+## SSM Backend
+
+model.py probes backends at import with small forward passes:
+- **Mamba3 Triton** (active): non-MIMO works, ~58k tok/s fwd+bwd+optim (bf16)
+- **Mamba3 MIMO**: broken on RDNA4 (tilelang `_NestedLoopCheckVisitor` bug)
+- **Mamba2 Triton**: broken on RDNA4 (missing `causal_conv1d` CUDA kernel)
+- **PureSSM** (auto-fallback): ~5k tok/s, pure PyTorch, works everywhere
+
+MIMO configs silently fall back to Mamba3 non-MIMO. No action needed.
 
 ## Architecture: AdaLN Timestep Conditioning
 
 We use AdaLN (from DiT) instead of DiffuMamba's concatenated timestep token.
-This is pure PyTorch and works on any hardware:
+Zero-initialized so blocks start as identity (scale=1, shift=0, gate=0).
 
-```python
-class AdaLN(nn.Module):
-    """Adaptive LayerNorm with scale, shift, gate — zero-initialized."""
-    def __init__(self, d_model: int, cond_dim: int):
-        super().__init__()
-        self.norm = nn.LayerNorm(d_model, elementwise_affine=False)
-        self.modulation = nn.Linear(cond_dim, 3 * d_model, bias=True)
-        nn.init.zeros_(self.modulation.weight)
-        nn.init.zeros_(self.modulation.bias)
-
-    def forward(self, x, c):
-        # x: (B, L, D), c: (B, cond_dim) → (normed_x, gate)
-        shift, scale, gate = self.modulation(c).unsqueeze(1).chunk(3, dim=-1)
-        normed = self.norm(x) * (1 + scale) + shift
-        return normed, gate
-```
-
-Usage in a block:
-```python
-h, gate = self.adaln(x, c)          # condition on timestep
-h = self.backbone(h)                 # SSM or attention
-x = x + gate * h                     # gated residual
-```
-
-Untested whether this is better or worse than DiffuMamba's concat approach.
+Note: time conditioning is currently OFF (`--no_time_cond`) in the best config.
+AdaLN receives zeros, so the modulation has no effect. This means the timestep
+embedding is essentially unused. An earlier experiment showed time conditioning
+ON was +1.3% better, but that was on PureSSM — needs re-validation on Mamba3 Triton.
 
 ## Data
 
-FineWeb-Edu pre-tokenized at `data/fineweb-edu/`:
-- `train.npy`: 1.0B tokens, uint16, 1.9GB (GPT-2 tokenizer)
-- `val.npy`: 100M tokens, uint16, 191MB
-- Load with: `torch.from_numpy(np.load(path).astype(np.int32))`
-- Do NOT load as int64 — that's 8GB of RAM for 1B tokens
+FineWeb-10B pre-tokenized `.bin` shards at `data/fineweb10B/`:
+- 10 train shards (1B tokens total) + 1 val shard (100M tokens)
+- Header: 256 int32s (magic=20240520, version=1, num_tokens)
+- Body: uint16 tokens (GPT-2 tokenizer)
+- Download: `python data/get_data.py`
+
+Also available: `data/fineweb-edu/` (.npy format, used in earlier experiments).
 
 ## Model Configs
 
 | Config | Params | d_model | layers | seq_len | Use case |
 |--------|--------|---------|--------|---------|----------|
-| tiny | 8.4M | 128 | 4 | 256 | Quick HP sweep (overparameterized for shakespeare) |
-| quokka | 35.9M | 384 | 4 | 1024 | Quokka-optimal for 1B tokens |
-| small | 84.2M | 512 | 8 | 512 | Medium experiments |
+| tiny | 8.4M | 128 | 4 | 256 | Quick HP sweep |
+| quokka | 35.9M | 384 | 4 | 1024 | Primary autoresearch config |
+| small | 84.2M | 512 | 8 | 512 | Scale-up experiments |
 | base | 231.4M | 768 | 12 | 1024 | Full scale |
 
-## Mamba Backend
+## Hardware Notes (AMD RX 9070 XT / RDNA4)
 
-- `mamba_ssm` installs from git HEAD with `MAMBA_SKIP_CUDA_BUILD=TRUE`
-- Mamba-2 SSD Triton kernels work on ROCm RDNA4 (935k tok/s)
-- Mamba-3 Triton kernels fail on RDNA4 (register allocation — see TRITON_SSM_HANDOFF.md)
-- Our PureSSM fallback works but is 700x slower (1.3k tok/s)
+- ROCm 7.2 / PyTorch 2.12.0.dev+rocm7.2
+- WSL2: requires `LD_PRELOAD=./librocprofiler_stub.so`
+- **Do NOT set** `PYTORCH_TUNABLEOP_ENABLED=1` — crashes with hipErrorInvalidValue
+- **Do NOT set** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` — same crash
+- bf16 works and is critical for performance (7.5x speedup over fp32)
 
 ## What We Did NOT Test
 
-- Hybrid attention layers (1 attn per 5 Mamba blocks)
-- Soft masking (Hersche et al.)
-- Longer training / convergence behavior
-- Multiple seeds for any configuration
-- Any config at >500 training steps
+- Hybrid attention layers (1 attn per 5 Mamba blocks — DiffuMamba-H style)
+- Soft masking (Hersche et al. ICLR 2026)
+- Scale-up to small (84M) or base (231M) config
+- Multiple seeds for significance testing
+- Training beyond 5000 steps
+- Sample quality evaluation (text generation, perplexity)
+
+## Experiment Proposals (in proposals/)
+
+Three proposals were generated and evaluated — see `proposals/EVALUATION.md`:
+1. **Scaling & Convergence** — longer training, larger models
+2. **Architecture Variants** — hybrid attention, soft masking, weight tying
+3. **Training Dynamics** — gamma sweep (DONE), NS steps probe (running), scheduled weighting
 
 ## Key References
 
@@ -143,4 +130,6 @@ FineWeb-Edu pre-tokenized at `data/fineweb-edu/`:
 - MDLM: Sahoo et al., NeurIPS 2024, arXiv 2406.07524
 - DiffuMamba: Singh et al., 2025, arXiv 2511.15927
 - Quokka: Ni et al., 2025, arXiv 2510.03280
-- Full experiment log: results/experiment_log.md
+- Muon: Keller Jordan et al., kellerjordan.github.io/posts/muon
+- EGD (Muon theory): Pasand & Dohmatob, ICLR 2026, arXiv 2510.04930
+- Full experiment log: results/experiment_log.md, results/autoresearch_mamba3.md

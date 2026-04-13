@@ -23,11 +23,10 @@ python data/get_data.py          # uses huggingface_hub
 # OR
 bash data/get_data.sh            # uses curl, no Python deps
 
-# Train (defaults: small config, Muon+AdamW, ELBO weighting)
-python train.py --config small --max_steps 5000
-
-# Best config (Muon + Min-SNR, validated at FineWeb scale)
-python train.py --config quokka --optimizer muon --loss_weight minsnr --batch_size 8
+# Train with best config (Muon + Min-SNR gamma=1.5)
+python train.py --config quokka --optimizer muon \
+  --loss_weight minsnr --minsnr_gamma 1.5 \
+  --no_time_cond --batch_size 8 --max_steps 5000
 
 # Autoresearch: sweep Muon vs Adam
 python autoresearch.py --mode compare_optimizers --budget_steps 500
@@ -52,7 +51,10 @@ Each **BiMamba3Block** (following DiffuMamba):
 - SUBS parameterization: kill mask logit, force unmasked positions to copy
 - Sampling: iterative unmasking from fully masked sequence
 
-**SSM backend**: tries `mamba_ssm` (Triton kernels) first, falls back to `PureSSM` — a pure PyTorch selective scan that runs on any device including AMD ROCm without custom kernels.
+**SSM backend** (auto-detected at import via probe forward passes):
+- **Mamba3 Triton** (preferred): ~58k tok/s bf16 fwd+bwd+optim on RX 9070 XT
+- Mamba3 MIMO: broken on RDNA4 — configs silently fall back to non-MIMO
+- **PureSSM** (fallback): ~5k tok/s, pure PyTorch chunked parallel scan, works on any device
 
 ## Data
 
@@ -86,36 +88,52 @@ From autoresearch sweeps (see `HANDOFF.md` for full details and confidence level
 
 | Finding | Confidence | Detail |
 |---------|-----------|--------|
-| **Muon beats Adam for masked diffusion** | HIGH | 0.78 loss units at 500 steps, gap widening. Novel result. |
-| **Min-SNR gamma=5** beats ELBO weighting | HIGH | Validated at two scales, matches [Hang et al. ICCV 2023](https://arxiv.org/abs/2303.09556) |
+| **Muon beats Adam for masked diffusion** | HIGH | val_loss 5.52 vs 5.95 at 5k steps (0.43 nats), gap still widening. Novel result. |
+| **Min-SNR gamma=1.5 is Muon-optimal** | HIGH | 7-point gamma sweep; beats flat (7.60) and standard gamma=5 (7.26) by >0.8 nats |
+| Gamma=1.5 is Muon-specific | MEDIUM | Adam prefers gamma=5 (standard). The interaction is explained by EGD theory. |
 | Muon lr=0.02 is optimal | MEDIUM | Sweep {0.005, 0.01, 0.02, 0.04}, default works |
 | Cosine schedule beats linear | MEDIUM | For both Muon and Adam |
-| torch.compile adds nothing | MEDIUM | Mamba3 Triton already optimized |
+| Mamba3 Triton (non-MIMO) on RDNA4 | HIGH | 58k tok/s steady-state. MIMO broken (tilelang bug), Mamba2 broken (causal_conv1d). |
+
+**Why Muon needs gamma=1.5:** Muon's Newton-Schulz iteration orthogonalizes gradient
+directions, making all singular values equal. ELBO weighting (1/t) creates extreme
+gradient scale variance across diffusion timesteps, conflicting with this equalization.
+Flat weighting avoids the conflict but discards useful signal. Gamma=1.5 is the sweet
+spot — mild enough for Muon's momentum buffer, strong enough to bias toward informative
+timesteps. This also explains why [standard Muon fails for image diffusion](https://arxiv.org/abs/2512.12386)
+(FID 48.70) — image diffusion uses MSE loss with implicit 1/SNR weighting that creates
+the same gradient scale conflict.
 
 ## Files
 
 ```
 train.py            # training loop, data loading, Muon+AdamW optimizer
 model.py            # DiffuMamba3: BiMamba3 blocks + MDLM diffusion + sampling
-ssm.py              # PureSSM: pure-PyTorch selective scan (no custom kernels)
+ssm.py              # PureSSM: pure-PyTorch chunked parallel scan (no custom kernels)
 autoresearch.py     # automated experiment runner (compare, sweep, single)
+sweep_gamma.py      # gamma sweep: find Muon-optimal loss weighting
+sweep_validation.py # convergence validation at 5000 steps
+sweep_ns_steps.py   # Newton-Schulz iteration count probe
 test_muon.py        # correctness tests for Muon + Newton-Schulz
 data/
   get_data.py       # download pre-tokenized .bin shards from HF Hub
   get_data.sh       # curl-based alternative
   tokenize.py       # stream-tokenize parquet files -> .bin shards
-ref/                # reference implementations (muon, modded-nanogpt)
+results/            # experiment results (JSON + markdown logs)
+proposals/          # experiment proposals and evaluation
 notes/              # research notes, paper summaries
-setup_rocm.sh       # AMD ROCm environment setup
 HANDOFF.md          # training recipe and experimental findings
 ```
 
 ## Hardware
 
-Developed on **AMD RX 9070 XT** (RDNA 4, 16GB VRAM, gfx1201) via ROCm on WSL2.
-Should work on any PyTorch-supported GPU (CUDA or ROCm). See `setup_rocm.sh` for AMD-specific setup.
+Developed on **AMD RX 9070 XT** (RDNA 4, 16GB VRAM, gfx1201) via ROCm 7.2 on WSL2.
+Should work on any PyTorch-supported GPU (CUDA or ROCm).
 
-WSL2 ROCm note: requires `LD_PRELOAD=./librocprofiler_stub.so` to work around a [rocprofiler-register crash](https://github.com/ROCm/rocprofiler-register/issues) in the DXG passthrough environment. See `stub_rocprof.c` for the workaround source.
+RDNA 4 notes:
+- WSL2 requires `LD_PRELOAD=./librocprofiler_stub.so` (see `stub_rocprof.c`)
+- **Do NOT** set `PYTORCH_TUNABLEOP_ENABLED=1` or `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` — both crash with `hipErrorInvalidValue` on RDNA4
+- bf16 is critical: 7.5x speedup over fp32 (train.py enables it automatically on CUDA)
 
 ## Inspiration and Prior Art
 
@@ -128,7 +146,8 @@ This project combines ideas from several lines of work:
 - **[Mamba](https://arxiv.org/abs/2312.00752)** / **[Mamba-2](https://arxiv.org/abs/2405.21060)** / **[Mamba-3](https://arxiv.org/abs/2603.15569)** (Gu, Dao et al.) — The SSM backbone: selective state spaces with input-dependent gating, evolving from Mamba-1's sequential scan through Mamba-2's structured state space duality to Mamba-3's complex-valued MIMO formulation.
 - **[Muon](https://kellerjordan.github.io/posts/muon/)** (Keller Jordan et al.) — The optimizer: Newton-Schulz orthogonalization of gradient momentum, 1.35x speedup on nanogpt. Applied here to masked diffusion for the first time.
 - **[LLaDA](https://arxiv.org/abs/2502.09992)** (Nie et al. 2025) — Proof that masked diffusion scales: 8B params competitive with LLaMA3 on reasoning benchmarks.
-- **[Min-SNR](https://arxiv.org/abs/2303.09556)** (Hang et al. ICCV 2023) — Loss weighting: clamp the ELBO weight at gamma=5 to reduce gradient conflict across timesteps. Our most reliable finding.
+- **[Min-SNR](https://arxiv.org/abs/2303.09556)** (Hang et al. ICCV 2023) — Loss weighting: clamp the ELBO weight to reduce gradient conflict across timesteps. Standard gamma=5 is optimal for Adam; we find **gamma=1.5 is Muon-optimal**.
+- **[EGD](https://arxiv.org/abs/2510.04930)** (Pasand & Dohmatob, ICLR 2026) — Egalitarian gradient descent theory: explains why Muon (approximate EGD) is sensitive to loss weight scale variance.
 - **[Quokka](https://arxiv.org/abs/2510.03280)** (Ni et al. 2025) — Scaling laws for masked diffusion LMs: optimal model size given a fixed token budget.
 
 ## License
