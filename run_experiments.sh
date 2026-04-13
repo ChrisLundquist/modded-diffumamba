@@ -4,7 +4,8 @@
 set -euo pipefail
 
 export LD_PRELOAD=./librocprofiler_stub.so
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# NOTE: expandable_segments crashes on RDNA4 (hipErrorInvalidValue)
+# See ~/BUG_expandable_segments_rdna4.md
 
 echo "=== Tier 1 Validation: 5000 steps ==="
 

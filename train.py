@@ -383,7 +383,7 @@ def train(args):
 
     # Build model
     model = DiffuMamba3(config).to(device)
-    if device.type == "cuda" and config.dtype == torch.bfloat16:
+    if device.type == "cuda":
         model = model.to(dtype=torch.bfloat16)
     n_params = count_parameters(model)
 
