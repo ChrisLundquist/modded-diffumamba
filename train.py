@@ -356,6 +356,14 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
 
 
 def train(args):
+    # Seed
+    if args.seed is not None:
+        import numpy as np
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -566,6 +574,8 @@ def parse_args():
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,
                    help="Adam beta2 (MDLM=0.999, DiffuMamba=0.95)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Random seed for reproducibility")
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--warmup_steps", type=int, default=50)
     p.add_argument("--lr_schedule", type=str, default="cosine",
