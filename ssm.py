@@ -251,10 +251,11 @@ class PureSSM(nn.Module):
                 y_correction[:, t] = (C_corr[:, t, :, :, None] * h_corr).sum(dim=2)
 
             # Add corrections to y_raw for chunks 1..n_chunks-1
-            y_raw_reshaped = y_raw.reshape(B_sz, n_chunks, C_size, n, hdim).clone()
-            y_raw_reshaped[:, 1:] = y_raw_reshaped[:, 1:] + y_correction.reshape(
-                B_sz, n_chunks - 1, C_size, n, hdim)
-            y_raw = y_raw_reshaped.reshape(BN, C_size, n, hdim)
+            # Pad correction with zeros for chunk 0, then add (no clone needed)
+            y_corr = y_correction.reshape(B_sz, n_chunks - 1, C_size, n, hdim)
+            y_corr = F.pad(y_corr, (0, 0, 0, 0, 0, 0, 1, 0))  # zero chunk-0
+            y_raw = (y_raw.reshape(B_sz, n_chunks, C_size, n, hdim) + y_corr
+                     ).reshape(BN, C_size, n, hdim)
 
         # Reshape back: (B, L_padded, n, hdim) → trim to (B, L, n, hdim)
         y = y_raw.reshape(B_sz, n_chunks * C_size, n, hdim)
