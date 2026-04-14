@@ -383,13 +383,16 @@ class DiffuMamba3(nn.Module):
         # Noise schedule
         self.noise = LogLinearNoise(eps=c.noise_eps)
 
-        # Init: global init, then re-apply SSM-specific inits (depth-scaled out_proj)
+        # Init: global init, then re-apply SSM-specific and merge gate inits
         self.apply(self._init_weights)
         for block in self.blocks:
             for attr in ['mamba_fwd', 'mamba_bwd']:
                 ssm = getattr(block, attr, None)
                 if ssm is not None and hasattr(ssm, '_init_weights'):
                     ssm._init_weights()
+            # Re-zero merge_gate after _init_weights overwrites it
+            if hasattr(block, 'merge_gate'):
+                nn.init.zeros_(block.merge_gate.weight)
 
     def _init_weights(self, module):
         if isinstance(module, AdaLN):

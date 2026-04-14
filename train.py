@@ -320,13 +320,16 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
         for name, p in model.named_parameters():
             if not p.requires_grad:
                 continue
-            # Muon for 2D weights in mamba blocks (not AdaLN, norms, or out_proj)
+            # Muon for 2D projection weights in mamba blocks
+            # Exclude: AdaLN, norms, out_proj, SSM decay (A_log), conv kernels
             is_hidden_2d = (
                 p.ndim >= 2
                 and "blocks" in name
                 and "adaln" not in name
                 and "norm" not in name
                 and "out_proj" not in name
+                and "A_log" not in name
+                and "conv1d" not in name
             )
             if is_hidden_2d:
                 muon_params.append(p)
@@ -389,7 +392,7 @@ def train(args):
     config.loss_weight = args.loss_weight
     config.minsnr_gamma = args.minsnr_gamma
     if args.attn_layers:
-        config.attn_layers = [int(x) for x in args.attn_layers.split(",")]
+        config.attn_layers = [int(x) for x in args.attn_layers.split(",") if x.strip()]
     if args.tie_weights:
         config.tie_bidi_weights = True
     if args.merge:
