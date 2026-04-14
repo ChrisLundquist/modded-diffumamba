@@ -388,6 +388,12 @@ def train(args):
     config.time_conditioning = not args.no_time_cond
     config.loss_weight = args.loss_weight
     config.minsnr_gamma = args.minsnr_gamma
+    if args.attn_layers:
+        config.attn_layers = [int(x) for x in args.attn_layers.split(",")]
+    if args.tie_weights:
+        config.tie_bidi_weights = True
+    if args.merge:
+        config.merge = args.merge
 
     # Build model
     model = DiffuMamba3(config).to(device)
@@ -560,6 +566,13 @@ def parse_args():
                    help="Loss weighting: elbo (1/t), flat (1), minsnr (clamped 1/t)")
     p.add_argument("--minsnr_gamma", type=float, default=5.0,
                    help="Clamp value for Min-SNR weighting (default 5)")
+    p.add_argument("--attn_layers", type=str, default=None,
+                   help="Comma-separated layer indices for attention (e.g., '0' or '1,3')")
+    p.add_argument("--tie_weights", action="store_true",
+                   help="Caduceus-style fwd/bwd weight tying in Mamba blocks")
+    p.add_argument("--merge", type=str, default=None,
+                   choices=["add", "mul", "gate"],
+                   help="Bidirectional merge strategy (default: add)")
 
     # Optimizer
     p.add_argument("--optimizer", type=str, default="muon",

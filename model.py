@@ -186,42 +186,50 @@ class SwiGLU(nn.Module):
 # BiMamba3 Block
 # ---------------------------------------------------------------------------
 
+def _build_ssm(d_model, d_state, headdim, expand, is_mimo, mimo_rank, chunk_size):
+    """Build a single SSM layer using the best available backend."""
+    if SSM_BACKEND == "mamba3":
+        use_mimo = is_mimo and SSM_MIMO_OK
+        return Mamba3(
+            d_model=d_model, d_state=d_state, headdim=headdim,
+            expand=expand, is_mimo=use_mimo,
+            **(dict(mimo_rank=mimo_rank) if use_mimo else {}),
+            chunk_size=chunk_size,
+        )
+    elif SSM_BACKEND == "mamba2":
+        return Mamba2(
+            d_model=d_model, d_state=d_state, headdim=headdim,
+            expand=expand, chunk_size=chunk_size,
+        )
+    else:
+        return PureSSM(d_model=d_model, d_state=d_state, expand=expand)
+
+
 class BiMamba3Block(nn.Module):
     """Bidirectional Mamba-3 block with AdaLN conditioning.
 
-    Following DiffuMamba: two independent scans (forward + backward), additive merge.
+    Following DiffuMamba: two independent scans (forward + backward), merged.
     Gate from AdaLN modulates the residual.
     """
     def __init__(self, d_model: int, cond_dim: int, d_state: int = 128,
                  headdim: int = 64, expand: int = 2, is_mimo: bool = True,
                  mimo_rank: int = 4, chunk_size: int = 16,
-                 mlp_expansion: int = 2):
+                 mlp_expansion: int = 2, tie_weights: bool = False,
+                 merge: str = "add"):
         super().__init__()
+        self.merge = merge
 
-        # Build SSM layers: Mamba-3 → Mamba-2 (Triton SSD) → PureSSM (fallback)
-        # If MIMO kernels are broken, use Mamba3 without MIMO (still much faster than PureSSM)
-        if SSM_BACKEND == "mamba3":
-            use_mimo = is_mimo and SSM_MIMO_OK
-            ssm_kwargs = dict(
-                d_model=d_model, d_state=d_state, headdim=headdim,
-                expand=expand, is_mimo=use_mimo,
-                **(dict(mimo_rank=mimo_rank) if use_mimo else {}),
-                chunk_size=chunk_size,
-            )
-            self.mamba_fwd = Mamba3(**ssm_kwargs)
-            self.mamba_bwd = Mamba3(**ssm_kwargs)
-        elif SSM_BACKEND == "mamba2":
-            ssm_kwargs = dict(
-                d_model=d_model, d_state=d_state, headdim=headdim,
-                expand=expand, chunk_size=chunk_size,
-            )
-            self.mamba_fwd = Mamba2(**ssm_kwargs)
-            self.mamba_bwd = Mamba2(**ssm_kwargs)
+        self.mamba_fwd = _build_ssm(d_model, d_state, headdim, expand,
+                                     is_mimo, mimo_rank, chunk_size)
+        if tie_weights:
+            self.mamba_bwd = self.mamba_fwd  # Caduceus-style weight sharing
         else:
-            # PureSSM: selective SSM in pure PyTorch (works on any GPU)
-            ssm_kwargs = dict(d_model=d_model, d_state=d_state, expand=expand)
-            self.mamba_fwd = PureSSM(**ssm_kwargs)
-            self.mamba_bwd = PureSSM(**ssm_kwargs)
+            self.mamba_bwd = _build_ssm(d_model, d_state, headdim, expand,
+                                         is_mimo, mimo_rank, chunk_size)
+
+        if merge == "gate":
+            self.merge_gate = nn.Linear(d_model, d_model, bias=False)
+            nn.init.zeros_(self.merge_gate.weight)
 
         # Conditioning and MLP
         self.adaln_mamba = AdaLN(d_model, cond_dim)
@@ -230,13 +238,63 @@ class BiMamba3Block(nn.Module):
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """x: (B, L, D), c: (B, cond_dim) → (B, L, D)"""
-        # Bidirectional Mamba scan with AdaLN
         h, gate = self.adaln_mamba(x, c)
         h_fwd = self.mamba_fwd(h)
         h_bwd = self.mamba_bwd(h.flip(1)).flip(1)
-        x = x + gate * (h_fwd + h_bwd)
 
-        # MLP with AdaLN
+        if self.merge == "mul":
+            merged = h_fwd * h_bwd
+        elif self.merge == "gate":
+            g = torch.sigmoid(self.merge_gate(h_fwd))
+            merged = g * h_fwd + (1 - g) * h_bwd
+        else:  # "add"
+            merged = h_fwd + h_bwd
+
+        x = x + gate * merged
+
+        h, gate = self.adaln_mlp(x, c)
+        x = x + gate * self.mlp(h)
+        return x
+
+
+# ---------------------------------------------------------------------------
+# Bidirectional Attention Block (for hybrid Mamba-attention models)
+# ---------------------------------------------------------------------------
+
+class BiAttentionBlock(nn.Module):
+    """Bidirectional self-attention block with AdaLN conditioning.
+
+    Drop-in replacement for BiMamba3Block at selected layer positions.
+    Uses F.scaled_dot_product_attention (dispatches to flash attn via Triton on RDNA4).
+    """
+    def __init__(self, d_model: int, cond_dim: int, nheads: int = None,
+                 mlp_expansion: int = 2, **kwargs):
+        super().__init__()
+        self.d_model = d_model
+        self.nheads = nheads or max(1, d_model // 64)
+        self.head_dim = d_model // self.nheads
+
+        self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+
+        self.adaln_attn = AdaLN(d_model, cond_dim)
+        self.adaln_mlp = AdaLN(d_model, cond_dim)
+        self.mlp = SwiGLU(d_model, expansion=mlp_expansion)
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        """x: (B, L, D), c: (B, cond_dim) → (B, L, D)"""
+        B, L, D = x.shape
+        h, gate = self.adaln_attn(x, c)
+
+        qkv = self.qkv(h).reshape(B, L, 3, self.nheads, self.head_dim)
+        q, k, v = qkv.unbind(dim=2)  # each (B, L, nheads, head_dim)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+
+        # Bidirectional: no causal mask
+        attn_out = F.scaled_dot_product_attention(q, k, v)
+        attn_out = attn_out.transpose(1, 2).reshape(B, L, D)
+        x = x + gate * self.out_proj(attn_out)
+
         h, gate = self.adaln_mlp(x, c)
         x = x + gate * self.mlp(h)
         return x
@@ -261,6 +319,11 @@ class DiffuMamba3Config:
     mlp_expansion: int = 2
     max_seq_len: int = 1024
     cond_dim: int = 128           # timestep conditioning dim
+
+    # Architecture options
+    attn_layers: list = None      # layer indices using attention (None = all Mamba)
+    tie_bidi_weights: bool = False  # Caduceus-style fwd/bwd weight tying
+    merge: str = "add"            # "add", "mul", or "gate" for bidi merge
 
     # Diffusion
     mask_token_id: int = 50257    # first unused id after GPT-2 vocab
@@ -292,16 +355,23 @@ class DiffuMamba3(nn.Module):
         # Timestep conditioning
         self.sigma_map = TimestepEmbedder(c.cond_dim)
 
-        # Mamba-3 blocks
-        self.blocks = nn.ModuleList([
-            BiMamba3Block(
-                d_model=c.d_model, cond_dim=c.cond_dim,
-                d_state=c.d_state, headdim=c.headdim, expand=c.expand,
-                is_mimo=c.is_mimo, mimo_rank=c.mimo_rank,
-                chunk_size=c.chunk_size, mlp_expansion=c.mlp_expansion,
-            )
-            for _ in range(c.n_layers)
-        ])
+        # Build blocks: Mamba by default, attention at specified layers
+        attn_set = set(c.attn_layers) if c.attn_layers else set()
+        self.blocks = nn.ModuleList()
+        for i in range(c.n_layers):
+            if i in attn_set:
+                self.blocks.append(BiAttentionBlock(
+                    d_model=c.d_model, cond_dim=c.cond_dim,
+                    mlp_expansion=c.mlp_expansion,
+                ))
+            else:
+                self.blocks.append(BiMamba3Block(
+                    d_model=c.d_model, cond_dim=c.cond_dim,
+                    d_state=c.d_state, headdim=c.headdim, expand=c.expand,
+                    is_mimo=c.is_mimo, mimo_rank=c.mimo_rank,
+                    chunk_size=c.chunk_size, mlp_expansion=c.mlp_expansion,
+                    tie_weights=c.tie_bidi_weights, merge=c.merge,
+                ))
 
         # Output: AdaLN + linear
         self.out_adaln = AdaLN(c.d_model, c.cond_dim)
@@ -316,8 +386,9 @@ class DiffuMamba3(nn.Module):
         # Init: global init, then re-apply SSM-specific inits (depth-scaled out_proj)
         self.apply(self._init_weights)
         for block in self.blocks:
-            for ssm in [block.mamba_fwd, block.mamba_bwd]:
-                if hasattr(ssm, '_init_weights'):
+            for attr in ['mamba_fwd', 'mamba_bwd']:
+                ssm = getattr(block, attr, None)
+                if ssm is not None and hasattr(ssm, '_init_weights'):
                     ssm._init_weights()
 
     def _init_weights(self, module):
