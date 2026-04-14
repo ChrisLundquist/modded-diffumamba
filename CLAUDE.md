@@ -46,20 +46,20 @@ Current status: Mamba3 non-MIMO works. MIMO configs silently fall back to non-MI
 
 ## Key Findings
 
-**Muon works for masked diffusion LMs.** This is novel — Muon fails catastrophically
-for image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy
-over masked tokens, not continuous noise prediction.
+**Muon beats Adam for masked diffusion LMs (t=40, p<0.001).** Novel — Muon fails for
+image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy.
+Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
-**Best configuration (validated at 5000 steps, quokka 31.5M):**
+**Best configuration (validated at 5000 steps, 3 seeds, quokka 31.5M):**
 - Muon lr=0.02 + AdamW lr=3e-4 (auxiliary)
-- Min-SNR gamma=1.5 loss weighting (Muon-optimal, see below)
-- Cosine LR schedule, no time conditioning
-- val_loss=5.52 vs Adam+minsnr baseline 5.95 (0.43 nat advantage)
+- Min-SNR gamma=1.5 (gamma barely matters — 1.5 vs 5 is ~0.025 nats)
+- Cosine LR schedule, time conditioning ON
+- All-Mamba, additive merge (hybrid attention hurts at this scale)
+- val_loss=5.52 ± 0.06 vs Adam 5.88 ± 0.07
 
-**Muon-optimal loss weighting: gamma=1.5.** Standard Min-SNR (gamma=5) conflicts with
-Muon's gradient orthogonalization. Flat weighting avoids the conflict but wastes
-information. Gamma=1.5 is the sweet spot — mild enough to not corrupt Muon's NS
-iteration, strong enough to bias toward informative timesteps.
+**Architecture: all-Mamba wins.** Hybrid attention (+0.06, sig), gated merge (+0.24, sig),
+and weight tying (+0.54, screen) all hurt. DiffuMamba-H's hybrid finding may need more
+scale. Time conditioning ON is marginally better (-0.013, p~0.09).
 
 ## Hardware Target
 

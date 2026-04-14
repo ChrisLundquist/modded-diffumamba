@@ -84,25 +84,22 @@ python data/tokenize.py --src data/my_parquets/ --dst data/my_tokens/ --tokens 1
 
 ## Key Findings
 
-From autoresearch sweeps (see `HANDOFF.md` for full details and confidence levels):
+All findings validated at 5000 steps with 3 paired seeds and t-tests (see `HANDOFF.md`):
 
 | Finding | Confidence | Detail |
 |---------|-----------|--------|
-| **Muon beats Adam for masked diffusion** | HIGH | val_loss 5.52 vs 5.95 at 5k steps (0.43 nats), gap still widening. Novel result. |
-| **Min-SNR gamma=1.5 is Muon-optimal** | HIGH | 7-point gamma sweep; beats flat (7.60) and standard gamma=5 (7.26) by >0.8 nats |
-| Gamma=1.5 is Muon-specific | MEDIUM | Adam prefers gamma=5 (standard). The interaction is explained by EGD theory. |
-| Muon lr=0.02 is optimal | MEDIUM | Sweep {0.005, 0.01, 0.02, 0.04}, default works |
-| Cosine schedule beats linear | MEDIUM | For both Muon and Adam |
-| Mamba3 Triton (non-MIMO) on RDNA4 | HIGH | 58k tok/s steady-state. MIMO broken (tilelang bug), Mamba2 broken (causal_conv1d). |
+| **Muon beats Adam** | HIGH (t=40, p<0.001) | +0.34 nats (5.53 vs 5.88), consistent across all seeds. Novel result. |
+| **All-Mamba beats hybrid attention** | HIGH (t=3.7, p<0.05) | 25% attention hurts by 0.06 nats at 31.5M. DiffuMamba-H found it helps at 1.3B. |
+| **Additive merge is best** | HIGH (t=7.5, p<0.01) | Gated merge +0.24 worse. Multiplicative also worse in screens. |
+| Gamma 1.5 ≈ gamma 5 | HIGH | Only ~0.025 nat difference. Either works. |
+| Time conditioning ON | MEDIUM (p~0.09) | Marginally better (-0.013 nats). DiffuMamba uses it. |
+| Muon lr=0.02 optimal | MEDIUM (n=1) | Sweep {0.005, 0.01, 0.02, 0.04} |
+| Mamba3 Triton on RDNA4 | HIGH | 58k tok/s. MIMO broken (tilelang), Mamba2 broken (causal_conv1d). |
 
-**Why Muon needs gamma=1.5:** Muon's Newton-Schulz iteration orthogonalizes gradient
-directions, making all singular values equal. ELBO weighting (1/t) creates extreme
-gradient scale variance across diffusion timesteps, conflicting with this equalization.
-Flat weighting avoids the conflict but discards useful signal. Gamma=1.5 is the sweet
-spot — mild enough for Muon's momentum buffer, strong enough to bias toward informative
-timesteps. This also explains why [standard Muon fails for image diffusion](https://arxiv.org/abs/2512.12386)
-(FID 48.70) — image diffusion uses MSE loss with implicit 1/SNR weighting that creates
-the same gradient scale conflict.
+**Why Muon works here but [fails for image diffusion](https://arxiv.org/abs/2512.12386):**
+MDLM uses cross-entropy over masked tokens — structurally identical to MLM where Muon
+excels. Image diffusion uses continuous noise prediction with implicit 1/SNR weighting
+that creates gradient scale conflicts with Muon's NS orthogonalization.
 
 ## Files
 

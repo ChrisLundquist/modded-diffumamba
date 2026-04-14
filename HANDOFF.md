@@ -2,20 +2,20 @@
 
 ## Confidence Levels
 
-**HIGH confidence (validated at 5000 steps on FineWeb-10B, Mamba3 Triton):**
-- Muon (lr=0.02) beats Adam (lr=3e-4) by 0.43 nats at 5000 steps, gap still widening
-- Min-SNR gamma=1.5 is Muon-optimal loss weighting (gamma sweep: 7 values)
-- Cosine LR schedule, no time conditioning
-- Auxiliary Adam lr=3e-4 for embeddings/norms (higher hurts)
+**HIGH confidence (validated at 5000 steps, 3 seeds, paired t-tests):**
+- Muon beats Adam by 0.34 ± 0.01 nats (t=40, p<0.001)
+- All-Mamba architecture beats hybrid Mamba-attention (+0.06, t=3.7, p<0.05)
+- Additive merge beats gated merge (+0.24, t=7.5, p<0.01)
+- Gamma 1.5 vs 5 difference is negligible (~0.025 nats, n.s.)
 
-**MEDIUM confidence (validated at 1000 steps, n=1):**
-- Muon lr=0.02 is optimal (sweep: 0.005, 0.01, 0.02, 0.04)
-- Gamma=1.5 is Muon-specific — Adam does slightly better with gamma=5
+**MEDIUM confidence (validated at 5000 steps, 3 seeds, not significant):**
+- Time conditioning ON may be marginally better (-0.013 nats, t=-2.0, p~0.09)
+- Muon lr=0.02 is optimal (sweep: 0.005, 0.01, 0.02, 0.04, n=1)
 - Mamba3 Triton (non-MIMO) works on RDNA4 at 58k tok/s steady-state
 
 **LOW confidence (single seed, short training):**
 - Weight decay, beta2 effects are within noise
-- NS iteration count interaction (probe running)
+- 1k-step n=1 rankings are unreliable (gamma sweep showed >1 nat effects that vanished at 5k)
 
 ## Best Configuration (validated at 5000 steps)
 
@@ -25,41 +25,45 @@ python train.py \
   --optimizer muon --muon_lr 0.02 --adam_lr 3e-4 \
   --loss_weight minsnr --minsnr_gamma 1.5 \
   --lr_schedule cosine --warmup_steps 200 \
-  --no_time_cond --batch_size 8 --max_steps 5000
+  --batch_size 8 --max_steps 5000 --save_best
 ```
 
-**5000-step results (quokka 31.5M, FineWeb-10B, Mamba3 Triton non-MIMO):**
+## Key Finding 1: Muon Beats Adam (definitive)
 
-| Config | val_loss | vs best |
-|--------|----------|---------|
-| **Muon + gamma=1.5** | **5.52** | — |
-| Muon + flat | 5.62 | +0.10 |
-| Adam + minsnr gamma=5 | 5.95 | +0.43 |
+**2×2 factorial, 3 paired seeds, 5000 steps:**
 
-## Key Finding: Muon-Optimal Loss Weighting
+| Config | Mean ± Std | Seeds |
+|--------|-----------|-------|
+| **Muon + gamma=1.5** | **5.528 ± 0.060** | [5.485, 5.596, 5.502] |
+| **Muon + gamma=5** | **5.553 ± 0.058** | [5.517, 5.620, 5.522] |
+| Adam + gamma=1.5 | 5.867 ± 0.069 | [5.810, 5.943, 5.847] |
+| Adam + gamma=5 | 5.894 ± 0.070 | [5.838, 5.972, 5.872] |
 
-**Muon needs a specific loss weighting to work well on masked diffusion.**
+**Muon advantage: +0.34 ± 0.01 nats (t=40, p<0.001).** Consistent across all seeds.
+Gamma effect is negligible (~0.025 nats) — either 1.5 or 5 works.
 
-Gamma sweep at 1000 steps (quokka, FineWeb-10B, Mamba3 Triton):
+An earlier 1k-step gamma sweep showed >1 nat differences between gamma values, but this
+was n=1 noise that vanished at 5k steps with proper seeding. **Lesson: never trust
+single-seed 1k-step rankings.**
 
-| gamma | val_loss | note |
-|-------|----------|------|
-| **1.5** | **6.39** | **Muon-optimal sweet spot** |
-| 2.0 | 6.41 | close second |
-| 10.0 | 6.56 | |
-| 5.0 | 7.26 | standard Min-SNR — bad for Muon |
-| 1.0 | 7.29 | too tight |
-| 3.0 | 7.57 | |
-| flat | 7.60 | no reweighting — worst |
+## Key Finding 2: Architecture (all Mamba wins)
 
-**Why gamma=1.5?** Muon's Newton-Schulz orthogonalization equalizes gradient singular
-values. ELBO weighting (1/t) creates extreme gradient scale variance across timesteps,
-conflicting with this equalization. Flat weighting avoids the conflict but discards
-useful signal about which timesteps are most informative. Gamma=1.5 is the sweet spot:
-just enough reweighting to help, but not enough to corrupt Muon's momentum buffer.
+**4 configs, 3 paired seeds, 5000 steps:**
 
-**This is Muon-specific.** Adam does slightly better with gamma=5 (standard Min-SNR).
-Gamma=1.5 does not help Adam at 1000 steps (6.79 vs 6.77 for gamma=5).
+| Config | Mean ± Std | vs baseline | Sig? |
+|--------|-----------|-------------|------|
+| time_cond ON | 5.521 ± 0.057 | -0.013 | no (t=-2.0, p~0.09) |
+| **baseline** (all Mamba) | **5.535 ± 0.047** | — | — |
+| hybrid 25% attn | 5.595 ± 0.056 | +0.061 | **yes** (t=3.7) |
+| gated merge | 5.772 ± 0.063 | +0.238 | **yes** (t=7.5) |
+
+- **Hybrid attention hurts** at this scale (31.5M, 4 layers). DiffuMamba-H found it
+  helps at 1.3B — the benefit likely requires more scale/depth.
+- **Additive merge is best.** Gated merge is significantly worse. Multiplicative was
+  also worse in 1k screens.
+- **Time conditioning ON is marginally better** (p~0.09). Not significant at 3 seeds
+  but consistent. DiffuMamba uses it. We recommend keeping it on.
+- **Weight tying (Caduceus-style) was worse** in 1k screens (+0.54). Not validated at 5k.
 
 ## SSM Backend
 
@@ -71,15 +75,13 @@ model.py probes backends at import with small forward passes:
 
 MIMO configs silently fall back to Mamba3 non-MIMO. No action needed.
 
-## Architecture: AdaLN Timestep Conditioning
+## Architecture
 
-We use AdaLN (from DiT) instead of DiffuMamba's concatenated timestep token.
-Zero-initialized so blocks start as identity (scale=1, shift=0, gate=0).
-
-Note: time conditioning is currently OFF (`--no_time_cond`) in the best config.
-AdaLN receives zeros, so the modulation has no effect. This means the timestep
-embedding is essentially unused. An earlier experiment showed time conditioning
-ON was +1.3% better, but that was on PureSSM — needs re-validation on Mamba3 Triton.
+- **Backbone:** All-Mamba bidirectional (forward + backward scan, additive merge)
+- **Conditioning:** AdaLN (from DiT) on noise timestep, zero-initialized
+- **Time conditioning:** ON (marginally better than OFF, matching DiffuMamba)
+- **Hybrid attention:** Tested, hurts at 31.5M scale — may help at larger scale per DiffuMamba-H
+- **CLI:** `--attn_layers`, `--tie_weights`, `--merge` for architecture experiments
 
 ## Data
 
@@ -108,21 +110,34 @@ Also available: `data/fineweb-edu/` (.npy format, used in earlier experiments).
 - **Do NOT set** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` — same crash
 - bf16 works and is critical for performance (7.5x speedup over fp32)
 
-## What We Did NOT Test
+## What We Tested (Architecture Screen, 1k steps)
 
-- Hybrid attention layers (1 attn per 5 Mamba blocks — DiffuMamba-H style)
-- Soft masking (Hersche et al. ICLR 2026)
+| Direction | Result | Note |
+|-----------|--------|------|
+| Hybrid 25% attn (pos 0) | +1.22 nats | Hurts badly at 1k, +0.06 at 5k |
+| Hybrid 25% attn (pos 3) | +1.20 nats | Similar |
+| Hybrid 50% attn | +1.25 nats | Worse |
+| Weight tying (Caduceus) | +0.54 nats | Hurts |
+| Multiplicative merge | +0.26 nats | Slightly worse |
+| Gated merge | +0.20 nats* | *Broken init in 1k screen; +0.24 at 5k |
+| Time cond ON | +0.23 nats | Hurts at 1k, -0.01 at 5k (reverses!) |
+
+**Lesson:** 1k-step screens are directionally useful but magnitude/sign can flip at 5k.
+
+## What We Have NOT Tested
+
 - Scale-up to small (84M) or base (231M) config
-- Multiple seeds for significance testing
 - Training beyond 5000 steps
+- Soft masking (Hersche et al. ICLR 2026)
+- Optimizer variants (Mousse, Muon-VS, AdaMuon)
 - Sample quality evaluation (text generation, perplexity)
+- Width vs depth tradeoffs at fixed param count
+- Noise schedule alternatives
 
 ## Experiment Proposals (in proposals/)
 
-Three proposals were generated and evaluated — see `proposals/EVALUATION.md`:
-1. **Scaling & Convergence** — longer training, larger models
-2. **Architecture Variants** — hybrid attention, soft masking, weight tying
-3. **Training Dynamics** — gamma sweep (DONE), NS steps probe (running), scheduled weighting
+See `proposals/EVALUATION.md` and `proposals/round2_EVALUATION.md` for ranked plans.
+See `proposals/wide_exploration_eval.md` for literature-backed direction analysis.
 
 ## Key References
 
