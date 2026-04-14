@@ -374,9 +374,10 @@ def train(args):
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
         print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-    # Model config
+    # Model config (copy to avoid mutating the shared default across in-process runs)
+    import copy
     if args.config in CONFIGS:
-        config = CONFIGS[args.config]
+        config = copy.deepcopy(CONFIGS[args.config])
     else:
         raise ValueError(f"Unknown config: {args.config}. "
                          f"Choose from: {list(CONFIGS.keys())}")
