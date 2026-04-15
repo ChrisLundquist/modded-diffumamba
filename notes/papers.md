@@ -181,10 +181,95 @@
 
 ---
 
+## Muon Optimizer Variants (2025-2026) — Active Research Area
+
+### AdaMuon — Adaptive Muon Optimizer
+- **Authors:** (Multiple authors)
+- **arXiv:** [2507.11005](https://arxiv.org/abs/2507.11005) (July 2025)
+- **Key idea:** Augments Muon with element-wise second-moment modulation that captures orthogonal gradient updates, plus RMS-aligned rescaling. Two mutually dependent modules.
+- **Results:** Consistently outperforms original Muon. Claims >40% training efficiency gain over Adam in large-scale scenarios.
+- **Relevance:** Interaction with Min-SNR loss weighting is untested. The element-wise adaptivity could help or hurt on masked diffusion.
+
+### NorMuon — Making Muon More Efficient and Scalable
+- **Authors:** (Multiple authors)
+- **arXiv:** [2510.05491](https://arxiv.org/abs/2510.05491) (October 2025)
+- **Key idea:** Neuron-wise adaptive learning rates computed from accumulated second-order statistics, applied after NS orthogonalization. Combines advantages of Muon (low condition number) and AdamW (uniform neuron norms).
+- **Results:** 21.74% better training efficiency than Adam, 11.31% over Muon at 1.1B scale.
+- **Relevance:** Neuron-wise normalization may help with timestep-varying gradient scales in masked diffusion.
+
+### Mousse — Rectifying the Geometry of Muon with Curvature-Aware Preconditioning
+- **Authors:** (Multiple authors)
+- **arXiv:** [2603.09697](https://arxiv.org/abs/2603.09697) (March 2026)
+- **Key idea:** Preconditions gradient with Shampoo's Kronecker-factored curvature before NS orthogonalization. Addresses Muon's isotropic trust region assumption which ignores curvature disparities.
+- **Results:** 12% fewer training steps, 3% wall-clock overhead vs standard Muon. Tested 160M-800M.
+- **Relevance:** Most principled Muon improvement. Curvature-aware preconditioning could be especially valuable for masked diffusion where loss landscape varies with timestep.
+
+### Newton-Muon — The Newton-Muon Optimizer
+- **Authors:** Zhehang Du, Weijie Su
+- **arXiv:** [2604.01472](https://arxiv.org/abs/2604.01472) (April 2026)
+- **Key idea:** Standard Muon neglects right preconditioning from input second moments. Newton-Muon adds this via a surrogate quadratic model using gradient, output curvature, and input data matrix.
+- **Results:** 6% fewer iteration steps, 4% less wall-clock time on GPT-2 pretraining.
+- **Relevance:** Very recent. Minimal validation so far.
+
+### Variance-Adaptive Muon — NSR-Modulated and Variance-Scaled Momentum
+- **Authors:** (Multiple authors)
+- **arXiv:** [2601.14603](https://arxiv.org/abs/2601.14603) (January 2026)
+- **Key idea:** Two variants: Muon-NSR (noise-to-signal ratio modulation) and Muon-VS (parameter-free variance scaling). Both apply variance statistics before NS step.
+- **Results:** 1.36x fewer iterations to target loss on LLaMA-1.2B vs well-tuned Muon.
+- **Relevance:** Muon-VS is parameter-free — attractive for autoresearch. The 1.36x claim on LLaMA is strong.
+
+### MuonAll — Muon Variant for Efficient Finetuning
+- **arXiv:** [2511.06086](https://arxiv.org/abs/2511.06086) (November 2025)
+- **Key idea:** Extends Muon to 1D parameters by reshaping to diagonal matrices, running NS, reshaping back. Removes dependency on AdamW for non-2D params.
+- **Results:** "At par" with AdamW across benchmarks for finetuning. NOT shown to be better than Muon+AdamW hybrid.
+- **Relevance:** Low. At-par results mean no improvement expected.
+
+---
+
+## Noise Schedule & Inference Optimization
+
+### Optimal Inference Schedules for Masked Diffusion Models
+- **Authors:** Sitan Chen, Kevin Cong, Jerry Li (Harvard)
+- **arXiv:** [2511.04647](https://arxiv.org/abs/2511.04647) (November 2025)
+- **Key idea:** Rigorously quantifies statistical errors from parallel token sampling. Derives optimal unmasking schedule depending on data distribution and target error.
+- **Results:** Cosine schedule arises as Fisher-Rao-geodesic optimal. Log-linear is a reasonable approximation. Optimal schedule is data-dependent.
+- **Relevance:** Mostly about inference scheduling, not training. Confirms our log-linear training schedule is reasonable.
+
+### Scaling Behavior of Discrete Diffusion Language Models
+- **arXiv:** [2512.10858](https://arxiv.org/abs/2512.10858) (December 2025)
+- **Key idea:** Scaling behavior of discrete diffusion LMs "strongly depends on noise type and is considerably different from autoregressive language models." Examines batch size and LR interactions.
+- **Relevance:** Important context for our scaling experiments. Batch size affects diffusion differently than AR.
+
+### Small Batch Size Training for Language Models
+- **arXiv:** [2507.07101](https://arxiv.org/abs/2507.07101) (July 2025)
+- **Key idea:** Small batches train stably, are more robust to hyperparameters, and achieve "equal or better per-FLOP performance." Gradient accumulation is "wasteful" for single-GPU.
+- **Relevance:** Argues against gradient accumulation for our setup. Our batch_size=8 may already be near-optimal.
+
+---
+
+## Hybrid Mamba-Attention (Encoder-Specific)
+
+### Nemotron-H — Family of Accurate, Efficient Hybrid Mamba-Transformer Models
+- **arXiv:** [2504.03624](https://arxiv.org/abs/2504.03624) (April 2025)
+- **Key finding:** 7-8% attention optimal for CAUSAL decoders. 4 attn layers out of 52 total at 8B. Up to 3x inference speedup.
+- **Relevance:** Sets the baseline for causal models. Our bidirectional model likely needs MORE attention.
+
+### Nemotron-3 Super — Open Hybrid MoE for Agentic Reasoning
+- **From:** NVIDIA, March 2026
+- **Key finding:** 120B hybrid Mamba-Attention MoE with 5x throughput. Extends Nemotron-H approach to MoE.
+
+### CRITICAL: Encoder vs Decoder Attention Requirements
+Literature consensus for optimal attention ratio:
+- **Causal decoder:** 7-12% (Nemotron-H, Jamba)
+- **Bidirectional encoder:** 20-33% (DiffuMamba-H, MaBERT)
+- Our model is bidirectional (encoder-like), so we should target the higher range.
+
+---
+
 ## Methodology: Autoresearch
 
 ### Karpathy Autoresearch Concept
 - AI-assisted systematic exploration of hyperparameters and architecture choices
-- Train → evaluate → analyze → propose changes → repeat
+- Train -> evaluate -> analyze -> propose changes -> repeat
 - The "test" in our context: achieve target perplexity/accuracy as fast as possible
 - Metrics: wall-clock time to reach target perplexity, final perplexity at fixed compute budget

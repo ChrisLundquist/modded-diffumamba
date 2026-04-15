@@ -261,8 +261,24 @@ class MuonAdamW(torch.optim.Optimizer):
             p.mul_(1 - lr * wd)
             p.add_(update, alpha=-lr)
 
+    @staticmethod
+    def _clean_eigenvalues(evals, eps):
+        """Shift eigenvalues so all are >= eps (from reference Mousse impl)."""
+        min_eig = evals.min()
+        shift = torch.clamp(-min_eig, min=0.0) + eps
+        return evals + shift
+
     def _mousse_step(self, group):
-        """Mousse: curvature-aware Muon (arXiv 2603.09697)."""
+        """Mousse: curvature-aware Muon (arXiv 2603.09697).
+
+        Matches the reference implementation at github.com/Anti-Entrophic/Mousse:
+        - Kronecker factor EMAs accumulated in fp32 (not param dtype)
+        - Bias correction on L/R before trace normalization
+        - clean_eigenvalues() post-eigh to handle negative eigenvalues
+        - LinAlgError caught to gracefully reuse stale factors
+        - shampoo_epsilon=1e-10 for damping (reference default)
+        - Whitening divides by eigenvalues (reference), not multiplied by inverse
+        """
         lr = group["lr"]
         beta = group["momentum"]
         wd = group["weight_decay"]
@@ -270,7 +286,7 @@ class MuonAdamW(torch.optim.Optimizer):
         beta_pc = group["mousse_beta_pc"]
         alpha = group["mousse_alpha"]
         T = group["mousse_T"]
-        eps = 1e-5
+        shampoo_eps = 1e-10  # damping for eigh (reference default)
 
         for p in group["params"]:
             if p.grad is None:
@@ -298,42 +314,77 @@ class MuonAdamW(torch.optim.Optimizer):
 
             m, n = update.shape
 
-            # Kronecker factor EMA
+            # --- Kronecker factor EMA (always fp32 for numerical stability) ---
+            g_f = g_2d.float()
             if "L" not in state:
-                state["L"] = torch.zeros(m, m, device=g.device, dtype=g.dtype)
-                state["R"] = torch.zeros(n, n, device=g.device, dtype=g.dtype)
-            state["L"].lerp_(g_2d @ g_2d.T, 1 - beta_pc)
-            state["R"].lerp_(g_2d.T @ g_2d, 1 - beta_pc)
+                state["L"] = torch.zeros(m, m, device=g.device, dtype=torch.float32)
+                state["R"] = torch.zeros(n, n, device=g.device, dtype=torch.float32)
+                # Initialize eigenvectors to identity (reference default)
+                state["eig_L"] = (torch.zeros(m, device=g.device, dtype=torch.float32),
+                                  torch.eye(m, device=g.device, dtype=torch.float32))
+                state["eig_R"] = (torch.zeros(n, device=g.device, dtype=torch.float32),
+                                  torch.eye(n, device=g.device, dtype=torch.float32))
+            state["L"].mul_(beta_pc).add_(g_f @ g_f.T, alpha=1 - beta_pc)
+            state["R"].mul_(beta_pc).add_(g_f.T @ g_f, alpha=1 - beta_pc)
 
-            # Eigendecompose periodically (fp32 — eigh doesn't support bf16)
-            if state["mousse_step"] % T == 1 or "Q_L" not in state:
-                L_f = state["L"].float()
-                R_f = state["R"].float()
-                L_norm = L_f * (m / (L_f.trace() + eps))
-                R_norm = R_f * (n / (R_f.trace() + eps))
-                eL, Q_L = torch.linalg.eigh(
-                    L_norm + eps * torch.eye(m, device=g.device))
-                eR, Q_R = torch.linalg.eigh(
-                    R_norm + eps * torch.eye(n, device=g.device))
-                state["Q_L"] = Q_L.to(g.dtype)
-                state["S_L"] = eL.clamp(min=eps).pow(-alpha).to(g.dtype)  # whiten
-                state["S_L_inv"] = eL.clamp(min=eps).pow(alpha).to(g.dtype)  # unwhiten
-                state["Q_R"] = Q_R.to(g.dtype)
-                state["S_R"] = eR.clamp(min=eps).pow(-alpha).to(g.dtype)
-                state["S_R_inv"] = eR.clamp(min=eps).pow(alpha).to(g.dtype)
+            # --- Eigendecompose periodically (all in fp32) ---
+            if state["mousse_step"] % T == 1 or T == 1:
+                step_k = state["mousse_step"]
 
-            Q_L, S_L = state["Q_L"], state["S_L"]
-            Q_R, S_R = state["Q_R"], state["S_R"]
-            S_L_inv, S_R_inv = state["S_L_inv"], state["S_R_inv"]
+                # Bias correction (reference: LR_correction=True)
+                bias_corr = 1.0 - beta_pc ** step_k
+                L_corr = state["L"] / bias_corr
+                R_corr = state["R"] / bias_corr
 
-            # Whiten → NS → unwhiten → graft
-            M_eig = Q_L.T @ update @ Q_R
-            M_white = S_L.unsqueeze(1) * M_eig * S_R.unsqueeze(0)
-            M_bar = zeropower_via_newtonschulz5(M_white, steps=ns_steps)
+                # Trace normalization (reference: dim / trace, no eps in denom)
+                trace_L = L_corr.trace()
+                trace_R = R_corr.trace()
+                if trace_L > 0:
+                    L_corr = L_corr * (m / trace_L)
+                if trace_R > 0:
+                    R_corr = R_corr * (n / trace_R)
+
+                # Eigendecomposition with damping
+                try:
+                    eL, Q_L = torch.linalg.eigh(
+                        L_corr + shampoo_eps * torch.eye(m, device=g.device))
+                    eR, Q_R = torch.linalg.eigh(
+                        R_corr + shampoo_eps * torch.eye(n, device=g.device))
+                    # Clean eigenvalues: shift so all >= eps (reference impl)
+                    eL = self._clean_eigenvalues(eL, shampoo_eps)
+                    eR = self._clean_eigenvalues(eR, shampoo_eps)
+                    state["eig_L"] = (eL, Q_L)
+                    state["eig_R"] = (eR, Q_R)
+                except torch.linalg.LinAlgError:
+                    # eigh failed to converge — reuse stale factors
+                    pass
+
+            eL, Q_L = state["eig_L"]
+            eR, Q_R = state["eig_R"]
+
+            # --- Whitening: rotate, scale by eigenvalue^{-alpha} ---
+            update_f = update.float()
+            M_rot = Q_L.T @ update_f @ Q_R  # rotate into eigenbasis
+
+            # Reference divides by eig^alpha (not multiply by eig^{-alpha})
+            eL_scale = eL.abs().pow(alpha)
+            eR_scale = eR.abs().pow(alpha)
+            M_white = M_rot / eL_scale.unsqueeze(1) / eR_scale.unsqueeze(0)
+
+            # Newton-Schulz in whitened space
+            M_bar = zeropower_via_newtonschulz5(M_white.to(g.dtype), steps=ns_steps)
+
+            # Grafting: save norm before unwhitening
             gamma_norm = M_bar.norm()
-            U_eig = S_L_inv.unsqueeze(1) * M_bar * S_R_inv.unsqueeze(0)
+
+            # --- Unwhitening: scale by eigenvalue^{-alpha} again, rotate back ---
+            M_bar_f = M_bar.float()
+            U_eig = M_bar_f / eL_scale.unsqueeze(1) / eR_scale.unsqueeze(0)
             update = Q_L @ U_eig @ Q_R.T
+
+            # Grafting: rescale to match NS output norm
             update = gamma_norm * update / (update.norm() + 1e-8)
+            update = update.to(g.dtype)
             update *= max(1, m / n) ** 0.5
 
             update = update.view(orig_shape)
