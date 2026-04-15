@@ -189,7 +189,8 @@ def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5) -> torch.Tensor
 class MuonAdamW(torch.optim.Optimizer):
     """Hybrid optimizer: Muon for 2D hidden weights, AdamW for everything else.
 
-    Based on SingleDeviceMuonWithAuxAdam from Keller Jordan's Muon repo.
+    Supports variants: "base" (standard Muon), "mousse" (curvature-aware),
+    "vs" (variance-scaled, parameter-free).
     """
     def __init__(self, param_groups):
         for group in param_groups:
@@ -199,6 +200,11 @@ class MuonAdamW(torch.optim.Optimizer):
                 group.setdefault("momentum", 0.95)
                 group.setdefault("weight_decay", 0.0)
                 group.setdefault("ns_steps", 5)
+                group.setdefault("muon_variant", "base")
+                # Mousse-specific
+                group.setdefault("mousse_beta_pc", 0.95)
+                group.setdefault("mousse_alpha", 0.125)
+                group.setdefault("mousse_T", 10)
             else:
                 group.setdefault("lr", 3e-4)
                 group.setdefault("betas", (0.9, 0.95))
@@ -210,7 +216,13 @@ class MuonAdamW(torch.optim.Optimizer):
     def step(self):
         for group in self.param_groups:
             if group["use_muon"]:
-                self._muon_step(group)
+                variant = group.get("muon_variant", "base")
+                if variant == "mousse":
+                    self._mousse_step(group)
+                elif variant == "vs":
+                    self._muon_vs_step(group)
+                else:
+                    self._muon_step(group)
             else:
                 self._adam_step(group)
 
@@ -246,6 +258,135 @@ class MuonAdamW(torch.optim.Optimizer):
             update = update.view(orig_shape)
 
             # Weight decay + update
+            p.mul_(1 - lr * wd)
+            p.add_(update, alpha=-lr)
+
+    def _mousse_step(self, group):
+        """Mousse: curvature-aware Muon (arXiv 2603.09697)."""
+        lr = group["lr"]
+        beta = group["momentum"]
+        wd = group["weight_decay"]
+        ns_steps = group["ns_steps"]
+        beta_pc = group["mousse_beta_pc"]
+        alpha = group["mousse_alpha"]
+        T = group["mousse_T"]
+        eps = 1e-5
+
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            g = p.grad
+
+            state = self.state[p]
+            if "momentum_buffer" not in state:
+                state["momentum_buffer"] = torch.zeros_like(g)
+                state["mousse_step"] = 0
+            buf = state["momentum_buffer"]
+            state["mousse_step"] += 1
+
+            # Nesterov momentum
+            buf.lerp_(g, 1 - beta)
+            update = g.lerp(buf, beta)
+
+            # Flatten to 2D
+            orig_shape = update.shape
+            if update.ndim > 2:
+                update = update.view(update.size(0), -1)
+                g_2d = g.view(g.size(0), -1)
+            else:
+                g_2d = g
+
+            m, n = update.shape
+
+            # Kronecker factor EMA
+            if "L" not in state:
+                state["L"] = torch.zeros(m, m, device=g.device, dtype=g.dtype)
+                state["R"] = torch.zeros(n, n, device=g.device, dtype=g.dtype)
+            state["L"].lerp_(g_2d @ g_2d.T, 1 - beta_pc)
+            state["R"].lerp_(g_2d.T @ g_2d, 1 - beta_pc)
+
+            # Eigendecompose periodically (fp32 — eigh doesn't support bf16)
+            if state["mousse_step"] % T == 1 or "Q_L" not in state:
+                L_f = state["L"].float()
+                R_f = state["R"].float()
+                L_norm = L_f * (m / (L_f.trace() + eps))
+                R_norm = R_f * (n / (R_f.trace() + eps))
+                eL, Q_L = torch.linalg.eigh(
+                    L_norm + eps * torch.eye(m, device=g.device))
+                eR, Q_R = torch.linalg.eigh(
+                    R_norm + eps * torch.eye(n, device=g.device))
+                state["Q_L"] = Q_L.to(g.dtype)
+                state["S_L"] = eL.clamp(min=eps).pow(-alpha).to(g.dtype)
+                state["Q_R"] = Q_R.to(g.dtype)
+                state["S_R"] = eR.clamp(min=eps).pow(-alpha).to(g.dtype)
+
+            Q_L, S_L = state["Q_L"], state["S_L"]
+            Q_R, S_R = state["Q_R"], state["S_R"]
+
+            # Whiten → NS → unwhiten → graft
+            M_eig = Q_L.T @ update @ Q_R
+            M_white = S_L.unsqueeze(1) * M_eig * S_R.unsqueeze(0)
+            M_bar = zeropower_via_newtonschulz5(M_white, steps=ns_steps)
+            gamma_norm = M_bar.norm()
+            U_eig = S_L.unsqueeze(1) * M_bar * S_R.unsqueeze(0)
+            update = Q_L @ U_eig @ Q_R.T
+            update = gamma_norm * update / (update.norm() + 1e-8)
+            update *= max(1, m / n) ** 0.5
+
+            update = update.view(orig_shape)
+            p.mul_(1 - lr * wd)
+            p.add_(update, alpha=-lr)
+
+    def _muon_vs_step(self, group):
+        """Muon-VS: variance-scaled Muon, parameter-free (arXiv 2601.14603)."""
+        lr = group["lr"]
+        beta = group["momentum"]
+        wd = group["weight_decay"]
+        ns_steps = group["ns_steps"]
+        eps = 1e-15
+
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            g = p.grad
+
+            state = self.state[p]
+            if "momentum_buffer" not in state:
+                state["momentum_buffer"] = torch.zeros_like(g)
+                state["var_buffer"] = torch.zeros_like(g)
+                state["vs_step"] = 0
+            buf = state["momentum_buffer"]
+            var_buf = state["var_buffer"]
+            state["vs_step"] += 1
+            s = state["vs_step"]
+
+            # Variance surrogate: Gamma = beta*Gamma + beta*(1-beta)*(M-G)^2
+            var_buf.mul_(beta).addcmul_(buf - g, buf - g, value=beta * (1 - beta))
+
+            # EMA momentum
+            buf.lerp_(g, 1 - beta)
+
+            # Bias correction
+            bc = 1 - beta ** s
+            M_hat = buf / bc
+            Gamma_hat = var_buf / bc
+
+            # Nesterov extrapolation
+            M_tilde = g + (beta / (1 - beta)) * M_hat
+
+            # Variance normalization BEFORE Newton-Schulz
+            update = M_tilde / (Gamma_hat.sqrt() + eps)
+
+            # Flatten to 2D
+            orig_shape = update.shape
+            if update.ndim > 2:
+                update = update.view(update.size(0), -1)
+
+            # Newton-Schulz orthogonalization
+            update = zeropower_via_newtonschulz5(update, steps=ns_steps)
+            update *= max(1, update.size(-2) / update.size(-1)) ** 0.5
+
+            update = update.view(orig_shape)
             p.mul_(1 - lr * wd)
             p.add_(update, alpha=-lr)
 
@@ -341,14 +482,20 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
         print(f"  Adam params: {sum(p.numel() for p in adam_params)/1e6:.1f}M "
               f"({len(adam_params)} tensors)")
 
+        muon_group = dict(
+            params=muon_params, use_muon=True,
+            lr=args.muon_lr, momentum=args.muon_momentum,
+            weight_decay=args.muon_wd, ns_steps=args.ns_steps,
+            muon_variant=args.muon_variant,
+        )
         param_groups = [
-            dict(params=muon_params, use_muon=True,
-                 lr=args.muon_lr, momentum=args.muon_momentum,
-                 weight_decay=args.muon_wd, ns_steps=args.ns_steps),
+            muon_group,
             dict(params=adam_params, use_muon=False,
                  lr=args.adam_lr, betas=(0.9, args.adam_beta2),
                  weight_decay=args.adam_wd),
         ]
+        if args.muon_variant != "base":
+            print(f"  Muon variant: {args.muon_variant}")
         return MuonAdamW(param_groups)
 
     else:  # plain AdamW
@@ -587,6 +734,9 @@ def parse_args():
     p.add_argument("--muon_wd", type=float, default=0.01)
     p.add_argument("--ns_steps", type=int, default=5,
                    help="Newton-Schulz iterations for Muon (default 5)")
+    p.add_argument("--muon_variant", type=str, default="base",
+                   choices=["base", "mousse", "vs"],
+                   help="Muon variant: base, mousse (curvature-aware), vs (variance-scaled)")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,
