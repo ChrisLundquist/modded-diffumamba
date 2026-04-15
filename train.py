@@ -316,19 +316,22 @@ class MuonAdamW(torch.optim.Optimizer):
                 eR, Q_R = torch.linalg.eigh(
                     R_norm + eps * torch.eye(n, device=g.device))
                 state["Q_L"] = Q_L.to(g.dtype)
-                state["S_L"] = eL.clamp(min=eps).pow(-alpha).to(g.dtype)
+                state["S_L"] = eL.clamp(min=eps).pow(-alpha).to(g.dtype)  # whiten
+                state["S_L_inv"] = eL.clamp(min=eps).pow(alpha).to(g.dtype)  # unwhiten
                 state["Q_R"] = Q_R.to(g.dtype)
                 state["S_R"] = eR.clamp(min=eps).pow(-alpha).to(g.dtype)
+                state["S_R_inv"] = eR.clamp(min=eps).pow(alpha).to(g.dtype)
 
             Q_L, S_L = state["Q_L"], state["S_L"]
             Q_R, S_R = state["Q_R"], state["S_R"]
+            S_L_inv, S_R_inv = state["S_L_inv"], state["S_R_inv"]
 
             # Whiten → NS → unwhiten → graft
             M_eig = Q_L.T @ update @ Q_R
             M_white = S_L.unsqueeze(1) * M_eig * S_R.unsqueeze(0)
             M_bar = zeropower_via_newtonschulz5(M_white, steps=ns_steps)
             gamma_norm = M_bar.norm()
-            U_eig = S_L.unsqueeze(1) * M_bar * S_R.unsqueeze(0)
+            U_eig = S_L_inv.unsqueeze(1) * M_bar * S_R_inv.unsqueeze(0)
             update = Q_L @ U_eig @ Q_R.T
             update = gamma_norm * update / (update.norm() + 1e-8)
             update *= max(1, m / n) ** 0.5
@@ -343,7 +346,7 @@ class MuonAdamW(torch.optim.Optimizer):
         beta = group["momentum"]
         wd = group["weight_decay"]
         ns_steps = group["ns_steps"]
-        eps = 1e-15
+        eps = 1e-6  # 1e-15 is subnormal in bf16, effectively zero
 
         for p in group["params"]:
             if p.grad is None:
@@ -375,7 +378,7 @@ class MuonAdamW(torch.optim.Optimizer):
             M_tilde = g + (beta / (1 - beta)) * M_hat
 
             # Variance normalization BEFORE Newton-Schulz
-            update = M_tilde / (Gamma_hat.sqrt() + eps)
+            update = M_tilde / (Gamma_hat.clamp(min=0).sqrt() + eps)
 
             # Flatten to 2D
             orig_shape = update.shape
