@@ -516,15 +516,16 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
             if not p.requires_grad:
                 continue
             # Muon for 2D projection weights in mamba blocks
-            # Exclude: AdaLN, norms, out_proj, SSM decay (A_log), conv kernels
+            # Exclude: AdaLN, norms, SSM decay (A_log), conv kernels
+            # out_proj: optionally include (5090 agent found it helps)
             is_hidden_2d = (
                 p.ndim >= 2
                 and "blocks" in name
                 and "adaln" not in name
                 and "norm" not in name
-                and "out_proj" not in name
                 and "A_log" not in name
                 and "conv1d" not in name
+                and (args.muon_out_proj or "out_proj" not in name)
             )
             if is_hidden_2d:
                 muon_params.append(p)
@@ -796,6 +797,8 @@ def parse_args():
     p.add_argument("--muon_variant", type=str, default="base",
                    choices=["base", "mousse", "vs"],
                    help="Muon variant: base, mousse (curvature-aware), vs (variance-scaled)")
+    p.add_argument("--muon_out_proj", action="store_true",
+                   help="Include out_proj in Muon routing (5090 agent found this helps)")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,
