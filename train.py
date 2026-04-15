@@ -599,6 +599,8 @@ def train(args):
         config.tie_bidi_weights = True
     if args.merge:
         config.merge = args.merge
+    if args.mlp_type:
+        config.mlp_type = args.mlp_type
 
     # Build model
     model = DiffuMamba3(config).to(device)
@@ -778,6 +780,9 @@ def parse_args():
     p.add_argument("--merge", type=str, default=None,
                    choices=["add", "mul", "gate"],
                    help="Bidirectional merge strategy (default: add)")
+    p.add_argument("--mlp_type", type=str, default=None,
+                   choices=["swiglu", "gelu"],
+                   help="MLP type: swiglu (default) or gelu (DiffuMamba style)")
 
     # Optimizer
     p.add_argument("--optimizer", type=str, default="muon",

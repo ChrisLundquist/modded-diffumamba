@@ -167,10 +167,11 @@ class AdaLN(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# SwiGLU MLP (2x expansion, following DiffuMamba)
+# MLP variants
 # ---------------------------------------------------------------------------
 
 class SwiGLU(nn.Module):
+    """SwiGLU MLP: gate * SiLU(proj) with 2x expansion (modded-nanogpt style)."""
     def __init__(self, d_model: int, expansion: int = 2):
         super().__init__()
         hidden = d_model * expansion
@@ -180,6 +181,24 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.w3(F.silu(self.w1(x)) * self.w2(x))
+
+
+class GeluMLP(nn.Module):
+    """Standard GELU MLP (DiffuMamba style): GELU(proj) with 2x expansion."""
+    def __init__(self, d_model: int, expansion: int = 2):
+        super().__init__()
+        hidden = d_model * expansion
+        self.fc1 = nn.Linear(d_model, hidden, bias=True)
+        self.fc2 = nn.Linear(hidden, d_model, bias=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(F.gelu(self.fc1(x)))
+
+
+def build_mlp(d_model: int, expansion: int = 2, mlp_type: str = "swiglu"):
+    if mlp_type == "gelu":
+        return GeluMLP(d_model, expansion=expansion)
+    return SwiGLU(d_model, expansion=expansion)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +234,7 @@ class BiMamba3Block(nn.Module):
                  headdim: int = 64, expand: int = 2, is_mimo: bool = True,
                  mimo_rank: int = 4, chunk_size: int = 16,
                  mlp_expansion: int = 2, tie_weights: bool = False,
-                 merge: str = "add"):
+                 merge: str = "add", mlp_type: str = "swiglu"):
         super().__init__()
         self.merge = merge
 
@@ -234,7 +253,7 @@ class BiMamba3Block(nn.Module):
         # Conditioning and MLP
         self.adaln_mamba = AdaLN(d_model, cond_dim)
         self.adaln_mlp = AdaLN(d_model, cond_dim)
-        self.mlp = SwiGLU(d_model, expansion=mlp_expansion)
+        self.mlp = build_mlp(d_model, expansion=mlp_expansion, mlp_type=mlp_type)
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """x: (B, L, D), c: (B, cond_dim) → (B, L, D)"""
@@ -268,7 +287,7 @@ class BiAttentionBlock(nn.Module):
     Uses F.scaled_dot_product_attention (dispatches to flash attn via Triton on RDNA4).
     """
     def __init__(self, d_model: int, cond_dim: int, nheads: int = None,
-                 mlp_expansion: int = 2, **kwargs):
+                 mlp_expansion: int = 2, mlp_type: str = "swiglu", **kwargs):
         super().__init__()
         self.d_model = d_model
         self.nheads = nheads or max(1, d_model // 64)
@@ -279,7 +298,7 @@ class BiAttentionBlock(nn.Module):
 
         self.adaln_attn = AdaLN(d_model, cond_dim)
         self.adaln_mlp = AdaLN(d_model, cond_dim)
-        self.mlp = SwiGLU(d_model, expansion=mlp_expansion)
+        self.mlp = build_mlp(d_model, expansion=mlp_expansion, mlp_type=mlp_type)
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """x: (B, L, D), c: (B, cond_dim) → (B, L, D)"""
@@ -317,6 +336,7 @@ class DiffuMamba3Config:
     mimo_rank: int = 4
     chunk_size: int = 16          # 64 // mimo_rank for MIMO
     mlp_expansion: int = 2
+    mlp_type: str = "swiglu"      # "swiglu" or "gelu" (DiffuMamba uses gelu)
     max_seq_len: int = 1024
     cond_dim: int = 128           # timestep conditioning dim
 
@@ -362,14 +382,14 @@ class DiffuMamba3(nn.Module):
             if i in attn_set:
                 self.blocks.append(BiAttentionBlock(
                     d_model=c.d_model, cond_dim=c.cond_dim,
-                    mlp_expansion=c.mlp_expansion,
+                    mlp_expansion=c.mlp_expansion, mlp_type=c.mlp_type,
                 ))
             else:
                 self.blocks.append(BiMamba3Block(
                     d_model=c.d_model, cond_dim=c.cond_dim,
                     d_state=c.d_state, headdim=c.headdim, expand=c.expand,
                     is_mimo=c.is_mimo, mimo_rank=c.mimo_rank,
-                    chunk_size=c.chunk_size, mlp_expansion=c.mlp_expansion,
+                    chunk_size=c.chunk_size, mlp_expansion=c.mlp_expansion, mlp_type=c.mlp_type,
                     tie_weights=c.tie_bidi_weights, merge=c.merge,
                 ))
 
