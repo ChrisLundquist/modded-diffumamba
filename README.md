@@ -95,6 +95,7 @@ All findings validated at 5000 steps with 3 paired seeds and t-tests (see `HANDO
 | **SwiGLU beats GELU** | MEDIUM (n.s.) | +0.077 nats for GELU at same expansion. DiffuMamba uses GELU. |
 | **All-Mamba beats hybrid attn** | HIGH (t=3.7, p<0.05) | 25% attention hurts by 0.06 nats at 31.5M. |
 | **Additive merge is best** | HIGH (t=7.5, p<0.01) | Gated merge +0.24 worse. Multiplicative also worse. |
+| Depth doesn't help at iso-params | HIGH (n.s.) | 8L×320d ≈ 4L×384d at ~32M. Width matters more than depth. |
 | Gamma 1.5 ≈ gamma 5 | HIGH | ~0.025 nat difference. Either works. |
 | Mamba3 Triton on RDNA4 | HIGH | 58k tok/s. MIMO broken (tilelang), Mamba2 broken (causal_conv1d). |
 

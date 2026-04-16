@@ -106,7 +106,9 @@ FineWeb-10B pre-tokenized `.bin` shards at `data/fineweb10B/`:
 - Body: uint16 tokens (GPT-2 tokenizer)
 - Download: `python data/get_data.py`
 
-Also available: `data/fineweb-edu/` (.npy format, used in earlier experiments).
+Also available:
+- `data/fineweb-edu-10B/` — FineWeb-Edu .bin shards (from karpathy/fineweb-edu-100B-gpt2-token-shards)
+- `data/fineweb-edu/` — FineWeb-Edu .npy format (from earlier experiments)
 
 ## Model Configs
 
@@ -139,14 +141,26 @@ Also available: `data/fineweb-edu/` (.npy format, used in earlier experiments).
 
 **Lesson:** 1k-step screens are directionally useful but magnitude/sign can flip at 5k.
 
+## Depth vs Width (5k steps, 3 seeds)
+
+| Config | Params | Mean ± Std | vs 4L×384d |
+|--------|--------|-----------|------------|
+| 8L×384d | 43.1M | 5.384 ± 0.024 | -0.018 (n.s.) |
+| 4L×384d | 31.5M | 5.402 ± 0.055 | — |
+| 6L×384d | 37.3M | 5.423 ± 0.018 | +0.021 (n.s.) |
+| 8L×320d | 32.9M | 5.436 ± 0.023 | +0.034 (n.s.) |
+
+**Finding:** Depth doesn't help at iso-params. Narrowing to 320d hurts more than 8 layers
+helps. 6L is a dead zone (worse than both 4L and 8L). More depth only helps with more
+params. The current quokka (4L×384d) is well-tuned for ~31M.
+
 ## What We Have NOT Tested
 
 - Scale-up to small (84M) or base (231M) config
-- Training beyond 5000 steps
+- Training beyond 10000 steps
 - Soft masking (Hersche et al. ICLR 2026)
-- Optimizer variants (Mousse, Muon-VS, AdaMuon)
 - Sample quality evaluation (text generation, perplexity)
-- Width vs depth tradeoffs at fixed param count
+- FineWeb-Edu vs FineWeb comparison
 - Noise schedule alternatives
 
 ## Experiment Proposals (in proposals/)
