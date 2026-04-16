@@ -22,11 +22,16 @@
 ```bash
 python train.py \
   --config quokka \
-  --optimizer muon --muon_lr 0.02 --adam_lr 3e-4 \
+  --optimizer muon --muon_variant vs --muon_lr 0.02 --adam_lr 3e-4 \
+  --muon_out_proj \
   --loss_weight minsnr --minsnr_gamma 1.5 \
   --lr_schedule cosine --warmup_steps 200 \
   --batch_size 8 --max_steps 5000 --save_best
 ```
+
+val_loss = 5.40 ± 0.06 (3 seeds) — improvements over base Muon:
+- Muon-VS (variance-scaled): -0.039 nats (t=-5.8, free, no overhead)
+- out_proj in Muon: -0.061 nats (t=-37.8, confirmed by 5090 agent too)
 
 ## Key Finding 1: Muon Beats Adam (definitive)
 

@@ -88,12 +88,14 @@ All findings validated at 5000 steps with 3 paired seeds and t-tests (see `HANDO
 
 | Finding | Confidence | Detail |
 |---------|-----------|--------|
-| **Muon beats Adam** | HIGH (t=40, p<0.001) | +0.34 nats (5.53 vs 5.88), consistent across all seeds. Novel result. |
-| **All-Mamba beats hybrid attention** | HIGH (t=3.7, p<0.05) | 25% attention hurts by 0.06 nats at 31.5M. DiffuMamba-H found it helps at 1.3B. |
-| **Additive merge is best** | HIGH (t=7.5, p<0.01) | Gated merge +0.24 worse. Multiplicative also worse in screens. |
-| Gamma 1.5 ≈ gamma 5 | HIGH | Only ~0.025 nat difference. Either works. |
-| Time conditioning ON | MEDIUM (p~0.09) | Marginally better (-0.013 nats). DiffuMamba uses it. |
-| Muon lr=0.02 optimal | MEDIUM (n=1) | Sweep {0.005, 0.01, 0.02, 0.04} |
+| **Muon beats Adam** | HIGH (t=40, p<0.001) | +0.35 nats at 10k steps. Novel result — Muon fails for image diffusion. |
+| **Muon-VS beats base Muon** | HIGH (t=-5.8, p<0.01) | -0.039 nats, parameter-free, same wall-clock cost. |
+| **Mousse beats Muon** | HIGH (t=-11.6, p<0.001) | -0.062 nats, but 2.4x wall-clock overhead (eigendecomposition). |
+| **out_proj in Muon helps** | HIGH (t=-37.8, p<0.001) | -0.061 nats. Confirmed independently on NVIDIA 5090. |
+| **SwiGLU beats GELU** | MEDIUM (n.s.) | +0.077 nats for GELU at same expansion. DiffuMamba uses GELU. |
+| **All-Mamba beats hybrid attn** | HIGH (t=3.7, p<0.05) | 25% attention hurts by 0.06 nats at 31.5M. |
+| **Additive merge is best** | HIGH (t=7.5, p<0.01) | Gated merge +0.24 worse. Multiplicative also worse. |
+| Gamma 1.5 ≈ gamma 5 | HIGH | ~0.025 nat difference. Either works. |
 | Mamba3 Triton on RDNA4 | HIGH | 58k tok/s. MIMO broken (tilelang), Mamba2 broken (causal_conv1d). |
 
 **Why Muon works here but [fails for image diffusion](https://arxiv.org/abs/2512.12386):**

@@ -51,15 +51,22 @@ image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-ent
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
 **Best configuration (validated at 5000 steps, 3 seeds, quokka 31.5M):**
-- Muon lr=0.02 + AdamW lr=3e-4 (auxiliary)
+- Muon-VS (variance-scaled) lr=0.02 + AdamW lr=3e-4 (auxiliary)
+- out_proj included in Muon routing (--muon_out_proj)
 - Min-SNR gamma=1.5 (gamma barely matters — 1.5 vs 5 is ~0.025 nats)
-- Cosine LR schedule, time conditioning ON
+- Cosine LR schedule, SwiGLU MLP, no time conditioning
 - All-Mamba, additive merge (hybrid attention hurts at this scale)
-- val_loss=5.52 ± 0.06 vs Adam 5.88 ± 0.07
+- val_loss=5.40 ± 0.06
+
+**Optimizer ranking (10k steps, 3 seeds):**
+- Mousse: 5.300 (best loss but 2.4x wall-clock cost)
+- Muon-VS: 5.323 (free improvement over base Muon)
+- Muon: 5.362
+- Adam: 5.710
 
 **Architecture: all-Mamba wins.** Hybrid attention (+0.06, sig), gated merge (+0.24, sig),
-and weight tying (+0.54, screen) all hurt. DiffuMamba-H's hybrid finding may need more
-scale. Time conditioning ON is marginally better (-0.013, p~0.09).
+and weight tying (+0.54, screen) all hurt. SwiGLU beats GELU (+0.08).
+out_proj in Muon helps (-0.06, t=-37.8).
 
 ## Hardware Target
 
