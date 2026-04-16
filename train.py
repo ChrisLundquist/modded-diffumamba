@@ -63,7 +63,7 @@ def load_data(path: str, split: str = "train",
     """
     if path and os.path.isdir(path):
         # Load all .bin shards for this split
-        pattern = os.path.join(path, f"fineweb_{split}_*.bin")
+        pattern = os.path.join(path, f"*fineweb_{split}_*.bin")
         files = sorted(glob.glob(pattern))
         if not files:
             raise FileNotFoundError(
