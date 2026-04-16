@@ -17,7 +17,7 @@
 - Weight decay, beta2 effects are within noise
 - 1k-step n=1 rankings are unreliable (gamma sweep showed >1 nat effects that vanished at 5k)
 
-## Best Configuration (validated at 5000 steps)
+## Best Configuration (validated at 10000 steps, 3 seeds)
 
 ```bash
 python train.py \
@@ -25,13 +25,23 @@ python train.py \
   --optimizer muon --muon_variant vs --muon_lr 0.02 --adam_lr 3e-4 \
   --muon_out_proj \
   --loss_weight minsnr --minsnr_gamma 1.5 \
-  --lr_schedule cosine --warmup_steps 200 \
-  --batch_size 8 --max_steps 5000 --save_best
+  --lr_schedule cosine --warmup_steps 400 \
+  --batch_size 8 --max_steps 10000 --save_best
 ```
 
-val_loss = 5.40 ± 0.06 (3 seeds) — improvements over base Muon:
-- Muon-VS (variance-scaled): -0.039 nats (t=-5.8, free, no overhead)
-- out_proj in Muon: -0.061 nats (t=-37.8, confirmed by 5090 agent too)
+**val_loss = 5.27 ± 0.02** vs Adam 5.71 ± 0.03 (0.45 nat advantage, t=66.7, p<0.001)
+
+Improvement stack from Adam baseline (all validated at 10k, 3 seeds):
+
+| Improvement | Nats gained | Val loss |
+|-------------|-------------|----------|
+| Adam baseline | — | 5.711 |
+| + Muon (base) | -0.349 | 5.362 |
+| + Variance scaling (VS) | -0.039 | 5.323 |
+| + out_proj routing | -0.057 | 5.266 |
+| **Total vs Adam** | **-0.446** | **5.266** |
+
+out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
 
 ## Key Finding 1: Muon Beats Adam (definitive)
 
