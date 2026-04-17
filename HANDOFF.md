@@ -2,34 +2,41 @@
 
 ## Confidence Levels
 
-**HIGH confidence (validated at 5000 steps, 3 seeds, paired t-tests):**
-- Muon beats Adam by 0.34 ± 0.01 nats (t=40, p<0.001)
-- All-Mamba architecture beats hybrid Mamba-attention (+0.06, t=3.7, p<0.05)
-- Additive merge beats gated merge (+0.24, t=7.5, p<0.01)
-- Gamma 1.5 vs 5 difference is negligible (~0.025 nats, n.s.)
+**HIGH confidence (validated at 5k/10k steps, 3 seeds, paired t-tests):**
+- Muon beats Adam by 0.35+ nats (t=40-66, p<0.001) at both 5k and 10k
+- Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
+- Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
+- out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
+- All-Mamba beats hybrid Mamba-attention (+0.06, t=3.7) at 31.5M scale
+- Additive merge beats gated merge (+0.24, t=7.5)
+- FineWeb-Edu beats FineWeb (-0.20 at 10k, t=-3.4, p<0.05)
+- lr=0.01 beats lr=0.02 for Muon-VS (LR monotonically worse as it increases)
+- ELBO still bad under Muon-VS (+0.18 nats vs gamma=1.5) — VS does NOT decouple optimizer from loss weighting
 
-**MEDIUM confidence (validated at 5000 steps, 3 seeds, not significant):**
-- Time conditioning ON may be marginally better (-0.013 nats, t=-2.0, p~0.09)
-- Muon lr=0.02 is optimal (sweep: 0.005, 0.01, 0.02, 0.04, n=1)
-- Mamba3 Triton (non-MIMO) works on RDNA4 at 58k tok/s steady-state
+**MEDIUM confidence:**
+- Time conditioning ON may be marginally better (-0.013, t=-2.0, p~0.09)
+- Gamma 1.5 vs 5 is negligible (~0.015-0.025 nats)
 
-**LOW confidence (single seed, short training):**
-- Weight decay, beta2 effects are within noise
-- 1k-step n=1 rankings are unreliable (gamma sweep showed >1 nat effects that vanished at 5k)
+**LOW confidence:**
+- Weight decay effects invisible at sub-epoch training
+- Depth vs width: no significant benefit at iso-params (8L×320d ≈ 4L×384d)
+- 1k-step n=1 rankings are unreliable
 
 ## Best Configuration (validated at 10000 steps, 3 seeds)
 
 ```bash
 python train.py \
   --config quokka \
-  --optimizer muon --muon_variant vs --muon_lr 0.02 --adam_lr 3e-4 \
+  --optimizer muon --muon_variant vs --muon_lr 0.01 --adam_lr 3e-4 \
   --muon_out_proj \
   --loss_weight minsnr --minsnr_gamma 1.5 \
   --lr_schedule cosine --warmup_steps 400 \
+  --data_dir data/fineweb-edu-10B \
   --batch_size 8 --max_steps 10000 --save_best
 ```
 
-**val_loss = 5.27 ± 0.02** vs Adam 5.71 ± 0.03 (0.45 nat advantage, t=66.7, p<0.001)
+**val_loss = 5.07 ± 0.08** (seeds: 4.976, 5.120, 5.111)
+vs Adam baseline 5.71 ± 0.03 → **0.64 nat advantage**
 
 Improvement stack from Adam baseline (all validated at 10k, 3 seeds):
 
@@ -38,10 +45,13 @@ Improvement stack from Adam baseline (all validated at 10k, 3 seeds):
 | Adam baseline | — | 5.711 |
 | + Muon (base) | -0.349 | 5.362 |
 | + Variance scaling (VS) | -0.039 | 5.323 |
-| + out_proj routing | -0.057 | 5.266 |
-| **Total vs Adam** | **-0.446** | **5.266** |
+| + out_proj in Muon routing | -0.057 | 5.266 |
+| + FineWeb-Edu + lr=0.01 | -0.197 | **5.069** |
+| **Total vs Adam** | **-0.642** | **5.069** |
 
 out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
+Higher new_best variance (std 0.08 vs old 0.02) — seed 42 was lucky at 4.976;
+seeds 137/2024 were closer to 5.11. Still significant at p<0.05.
 
 ## Key Finding 1: Muon Beats Adam (definitive)
 

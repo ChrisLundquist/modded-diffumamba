@@ -51,23 +51,34 @@ image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-ent
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
 **Best configuration (validated at 10000 steps, 3 seeds, quokka 31.5M):**
-- Muon-VS (variance-scaled) lr=0.02 + AdamW lr=3e-4 (auxiliary)
+- Muon-VS (variance-scaled) muon_lr=0.01 + AdamW lr=3e-4 (auxiliary)
 - out_proj included in Muon routing (--muon_out_proj)
-- Min-SNR gamma=1.5 (gamma barely matters — 1.5 vs 5 is ~0.025 nats)
+- Min-SNR gamma=1.5 (gamma barely matters — 1.5 vs 5 is ~0.015 nats)
 - Cosine LR schedule, SwiGLU MLP
 - All-Mamba, additive merge (hybrid attention hurts at this scale)
-- val_loss=5.27 ± 0.02 vs Adam 5.71 ± 0.03 (0.45 nat advantage, t=66.7)
+- **FineWeb-Edu** data (beats plain FineWeb by 0.07 nats)
+- val_loss = 5.07 ± 0.08 vs Adam 5.71 ± 0.03 (0.64 nat advantage)
 
-**Optimizer ranking (10k steps, 3 seeds):**
-- Muon-VS + out_proj: 5.266 (best practical config)
-- Mousse: 5.300 (best loss but 2.4x wall-clock cost)
-- Muon-VS: 5.323 (free improvement over base Muon)
+**Improvement stack from Adam baseline (10k, 3 seeds):**
+- Adam: 5.711
+- + Muon: 5.362 (-0.35)
+- + Variance scaling (VS): 5.323 (-0.04)
+- + out_proj in Muon: 5.266 (-0.06)
+- + FineWeb-Edu + lr=0.01: **5.069** (-0.20)
+
+**Optimizer ranking (10k steps, 3 seeds, FineWeb):**
+- Mousse: 5.300 (best raw loss, 2.4x wall-clock)
+- Muon-VS + out_proj: 5.266 (best practical)
+- Muon-VS: 5.323
 - Muon: 5.362
 - Adam: 5.711
 
 **Architecture: all-Mamba wins.** Hybrid attention (+0.06, sig), gated merge (+0.24, sig),
 and weight tying (+0.54, screen) all hurt. SwiGLU beats GELU (+0.08).
-out_proj in Muon helps (-0.06, t=-37.8).
+Depth doesn't help at iso-params (8L×320d ≈ 4L×384d). out_proj in Muon helps (-0.06).
+
+**Loss weighting: gamma=1.5 ≈ gamma=5, ELBO still bad** — Muon-VS does NOT
+decouple optimizer from loss weighting. ELBO (1/t) is +0.18 nats worse even with VS.
 
 ## Hardware Target
 

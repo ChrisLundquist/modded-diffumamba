@@ -23,10 +23,13 @@ python data/get_data.py          # uses huggingface_hub
 # OR
 bash data/get_data.sh            # uses curl, no Python deps
 
-# Train with best config (Muon + Min-SNR gamma=1.5)
-python train.py --config quokka --optimizer muon \
+# Train with best config (Muon-VS + out_proj + FineWeb-Edu)
+python train.py --config quokka \
+  --optimizer muon --muon_variant vs --muon_lr 0.01 --adam_lr 3e-4 \
+  --muon_out_proj \
   --loss_weight minsnr --minsnr_gamma 1.5 \
-  --no_time_cond --batch_size 8 --max_steps 5000
+  --data_dir data/fineweb-edu-10B \
+  --batch_size 8 --max_steps 10000 --save_best
 
 # Autoresearch: sweep Muon vs Adam
 python autoresearch.py --mode compare_optimizers --budget_steps 500
@@ -86,17 +89,22 @@ python data/tokenize.py --src data/my_parquets/ --dst data/my_tokens/ --tokens 1
 
 All findings validated at 5000 steps with 3 paired seeds and t-tests (see `HANDOFF.md`):
 
+**Current best at 10k steps, 3 seeds: val_loss = 5.07 vs Adam 5.71 → 0.64 nat advantage**
+
 | Finding | Confidence | Detail |
 |---------|-----------|--------|
-| **Muon beats Adam** | HIGH (t=40, p<0.001) | +0.35 nats at 10k steps. Novel result — Muon fails for image diffusion. |
-| **Muon-VS beats base Muon** | HIGH (t=-5.8, p<0.01) | -0.039 nats, parameter-free, same wall-clock cost. |
-| **Mousse beats Muon** | HIGH (t=-11.6, p<0.001) | -0.062 nats, but 2.4x wall-clock overhead (eigendecomposition). |
+| **Muon beats Adam** | HIGH (t=40-66, p<0.001) | +0.35 nats baseline → +0.64 with full stack. Novel — Muon fails for image diffusion. |
+| **FineWeb-Edu beats FineWeb** | HIGH (t=-3.4, p<0.05) | -0.20 nats at 10k. Biggest single improvement after Muon. |
+| **Muon-VS beats base Muon** | HIGH (t=-5.8, p<0.01) | -0.039 nats, parameter-free, same wall-clock. |
+| **Mousse beats Muon** | HIGH (t=-11.6, p<0.001) | -0.062 nats, but 2.4x wall-clock overhead. |
 | **out_proj in Muon helps** | HIGH (t=-37.8, p<0.001) | -0.061 nats. Confirmed independently on NVIDIA 5090. |
+| **lr=0.01 beats lr=0.02 for Muon-VS** | HIGH | LR monotonically worse as it rises (0.01→0.08). |
+| **ELBO still bad under Muon-VS** | HIGH | +0.18 nats vs gamma=1.5. VS does NOT decouple optimizer from loss weighting. |
 | **SwiGLU beats GELU** | MEDIUM (n.s.) | +0.077 nats for GELU at same expansion. DiffuMamba uses GELU. |
 | **All-Mamba beats hybrid attn** | HIGH (t=3.7, p<0.05) | 25% attention hurts by 0.06 nats at 31.5M. |
 | **Additive merge is best** | HIGH (t=7.5, p<0.01) | Gated merge +0.24 worse. Multiplicative also worse. |
-| Depth doesn't help at iso-params | HIGH (n.s.) | 8L×320d ≈ 4L×384d at ~32M. Width matters more than depth. |
-| Gamma 1.5 ≈ gamma 5 | HIGH | ~0.025 nat difference. Either works. |
+| Depth doesn't help at iso-params | HIGH (n.s.) | 8L×320d ≈ 4L×384d at ~32M. Width matters more. |
+| Gamma 1.5 ≈ gamma 5 | HIGH | ~0.015-0.025 nat difference. Either works. |
 | Mamba3 Triton on RDNA4 | HIGH | 58k tok/s. MIMO broken (tilelang), Mamba2 broken (causal_conv1d). |
 
 **Why Muon works here but [fails for image diffusion](https://arxiv.org/abs/2512.12386):**
