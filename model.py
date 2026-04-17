@@ -591,10 +591,16 @@ class DiffuMamba3(nn.Module):
     @torch.no_grad()
     def sample(self, batch_size: int = 1, seq_len: int = None,
                num_steps: int = 128, device: str = "cuda",
-               temperature: float = 1.0) -> torch.Tensor:
+               temperature: float = 1.0, top_p: float = 1.0,
+               top_k: int = 0) -> torch.Tensor:
         """Generate text by iterative unmasking (DDPM caching update from MDLM).
 
         Start fully masked, step from t=1 to t≈0, progressively unmask.
+
+        Args:
+            temperature: softmax temperature on token distribution (1.0 = off)
+            top_p: nucleus sampling threshold (1.0 = off, 0.9 typical)
+            top_k: top-k truncation (0 = off)
         """
         if seq_len is None:
             seq_len = self.config.max_seq_len
@@ -631,6 +637,23 @@ class DiffuMamba3(nn.Module):
             # Apply temperature to token distribution (NOT to mask-retention prob)
             if temperature != 1.0:
                 p_x0 = p_x0 ** (1.0 / temperature)
+                p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+
+            # Top-k: zero out all but the top-k token probabilities
+            if top_k > 0:
+                topk_vals, _ = p_x0.topk(top_k, dim=-1)
+                threshold = topk_vals[..., -1:].expand_as(p_x0)
+                p_x0 = torch.where(p_x0 < threshold, torch.zeros_like(p_x0), p_x0)
+                p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+
+            # Top-p (nucleus): zero out tokens outside the top-p probability mass
+            if top_p < 1.0:
+                sorted_p, sorted_idx = p_x0.sort(dim=-1, descending=True)
+                cum_p = sorted_p.cumsum(dim=-1)
+                # Keep tokens up to and including the one that crosses top_p
+                sorted_mask = cum_p - sorted_p > top_p
+                mask = torch.zeros_like(sorted_mask).scatter(-1, sorted_idx, sorted_mask)
+                p_x0 = p_x0.masked_fill(mask, 0.0)
                 p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
 
             # Build normalized transition distribution for masked positions
