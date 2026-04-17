@@ -690,6 +690,12 @@ def train(args):
             if is_best and args.save_best:
                 torch.save(model.state_dict(), args.save_path)
 
+            # Periodic checkpoint (e.g., every 10k steps)
+            if args.save_every > 0 and step > 0 and step % args.save_every == 0:
+                ckpt_path = args.save_path.replace(".pt", f"_step{step}.pt")
+                torch.save(model.state_dict(), ckpt_path)
+                print(f"  [periodic ckpt] saved to {ckpt_path}")
+
             model.train()
 
         if step == args.max_steps:
@@ -835,6 +841,8 @@ def parse_args():
     # Saving
     p.add_argument("--save_best", action="store_true")
     p.add_argument("--save_path", type=str, default="best_model.pt")
+    p.add_argument("--save_every", type=int, default=0,
+                   help="Save checkpoint every N steps (0 to disable)")
 
     # Logging
     p.add_argument("--wandb", action="store_true")
