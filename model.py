@@ -628,6 +628,11 @@ class DiffuMamba3(nn.Module):
             else:
                 p_x0 = p_x0_cache
 
+            # Apply temperature to token distribution (NOT to mask-retention prob)
+            if temperature != 1.0:
+                p_x0 = p_x0 ** (1.0 / temperature)
+                p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+
             # Build normalized transition distribution for masked positions
             # p(unmask to token v) = p_x0[v] * (1 - move_chance_s / move_chance_t)
             # p(stay masked)       = move_chance_s / move_chance_t
@@ -635,13 +640,11 @@ class DiffuMamba3(nn.Module):
             q_xs = p_x0 * unmask_prob
             q_xs[:, :, self.config.mask_token_id] = move_chance_s / (move_chance_t + 1e-8)
 
-            # Apply temperature
-            if temperature != 1.0:
-                q_xs = q_xs ** (1.0 / temperature)
-
-            # Sample using Gumbel-max trick
-            gumbel = -(torch.rand_like(q_xs) + 1e-10).log()
-            sampled = (q_xs / (gumbel + 1e-10)).argmax(dim=-1)
+            # Sample using Gumbel-max trick — fp32 for Gumbel (bf16 truncates noise)
+            # See Zheng et al. 2024 (arXiv 2409.02908): bf16 Gumbel → low-temp collapse
+            q_xs_f = q_xs.float()
+            gumbel = -(torch.rand_like(q_xs_f) + 1e-10).log()
+            sampled = (q_xs_f / (gumbel + 1e-10)).argmax(dim=-1)
 
             # Only update masked positions
             is_masked = (x == self.config.mask_token_id)
