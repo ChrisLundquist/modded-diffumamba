@@ -149,12 +149,13 @@ class MDLMAdapter:
             raise KeyError(f'Unknown sampler: {sampler}. Available: {list(SAMPLERS)}')
         fn = SAMPLERS[sampler]
         kwargs = dict(top_k=top_k, temperature=temperature, device=self.device)
-        if sampler == 'maskgit':
-            # n_steps for MaskGIT defaults to 12 (see sampler module)
-            if n_steps is not None:
-                kwargs['n_steps'] = n_steps
-        else:
+        # Forward n_steps consistently: only set when the caller actually
+        # passes a value, so each sampler's own default takes effect when
+        # n_steps is None (mdlm_topk → cont_len//2; maskgit → 12).
+        if n_steps is not None:
             kwargs['n_steps'] = n_steps
+        # sampler_kwargs takes precedence over the above defaults — explicit
+        # caller intent wins (e.g. confidence='gumbel' for MaskGIT).
         kwargs.update(sampler_kwargs)
         return fn(self.model, prefix_ids, cont_len, **kwargs)
 
