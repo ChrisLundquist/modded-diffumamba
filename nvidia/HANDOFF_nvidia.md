@@ -60,7 +60,7 @@ Architecture ranking at 5K steps (3-seed probe, ELBO metric):
   - Fix at `.venv/lib/python3.12/site-packages/tilelang/3rdparty/tvm/python/tvm/runtime/support.py` line 153
   - PR submitted upstream
 - **Data:** 1.1B FineWeb-Edu tokens at `/home/clundquist/muon_data/fineweb_1B.npy` (uint16, 2.1GB)
-  - Also on Windows mount: `muon_exp/data_cache/fineweb_1B.npy` (84x slower I/O)
+  - Also on Windows mount: `nvidia/data_cache/fineweb_1B.npy` (84x slower I/O)
   - Train: first 1B tokens, Val: last 100M tokens, GPT-2 tokenizer
 
 ### Known Patches (will be lost if packages reinstalled)
@@ -176,45 +176,35 @@ Architecture ranking at 5K steps (3-seed probe, ELBO metric):
 ## Code Structure
 
 ```
-muon_exp/
+nvidia/
 ├── src/
-│   ├── model.py          # GPT-2 transformer (supports causal=True/False)
-│   ├── muon.py           # Muon optimizer (NS orthogonalization)
-│   ├── hybrid_model.py   # DiffuMambaH: Mamba3 + attention hybrid
-│   ├── hybrid_model_v2.py # MIMO version (broken on 5090, works on datacenter)
-│   ├── adaln.py          # AdaLN time conditioning
-│   └── data.py           # TokenDataset, DataLoader helpers
-├── gate1_probe.py        # Muon vs AdamW on AR transformer (Gate 1+2)
-├── mdlm_probe.py         # Muon vs AdamW on MDLM (initial probe)
-├── mdlm_converge.py      # 25M transformer convergence (cosine LR)
-├── mdlm_converge_50m.py  # 50M transformer convergence
-├── mdlm_extend_25m.py    # Extended 25M run (constant LR, to epoch 8.5)
-├── mdlm_reshuffle.py     # B0: reshuffle vs constant LR experiment
-├── mdlm_resume_50m.py    # 50M resumed at lr=0.01
-├── mdlm_mamba3_converge.py   # Mamba3 convergence (DONE to 56K, set up for 65K extension)
-├── mdlm_mamba3_recipes.py    # Recipe comparison (B, C, D configs)
-├── mdlm_mamba3_cd.py         # Configs C+D only
-├── mdlm_mamba3_muon_probe.py # 2x2 probe: {Adam,Muon}x{g1.5,g5} (DONE)
-├── mdlm_adaln_test.py        # AdaLN A/B test
-├── mdlm_transformer_lr_sweep.py # Transformer LR sweep (DONE, Config C is new best)
-├── mdlm_transformer_converge_v2.py # Fixed baseline convergence (DONE to 45K, paused)
-├── mdlm_transformer_converge_v3.py # D_modern 30M convergence (DONE, val 5.272)
-├── mdlm_transformer_variants.py    # 5-config variant probe (DONE, 3 seeds)
-├── mdlm_muon_fp32_test.py       # NS precision test: bf16/fp16/fp32 (DONE, identical)
-├── mdlm_muon_config_match.py    # Cross-agent config match (DONE, 4 configs)
-├── mdlm_published_baseline.py   # Faithful MDLM reproduction (DONE, val 5.35/5.32)
-├── mdlm_d_modern_ablation.py    # RoPE vs SwiGLU 2x2 (DONE: RoPE is 95%)
-├── mdlm_125m_10b.py             # 125M D_modern on 10B (DONE, val 4.499)
-├── probe_mdlm.py                # Cloze probes + greedy demasking (DONE)
-├── probe_mdlm_125m.py           # Multi-model probe (has sampler bug, deprecated)
-├── probe_mdlm_fixed.py          # Fixed sampler comparison (DONE)
-├── probe_multi_seed.py          # 10-seed generation diversity (DONE)
-├── profile_vram.py              # VRAM profiler (DONE)
-├── download_tokens_10b.py       # 10B FineWeb-Edu downloader (DONE, 19GB npy)
-├── eval_standard_nll.py         # Standard ELBO eval (DONE, 3 metrics, 3 models)
-├── download_tokens.py        # FineWeb-Edu download + tokenize (mmap)
-├── tokenize_parquet.py     # Parquet → mmap tokenizer
-└── outputs/                # All results and checkpoints
+│   ├── gpt2.py              # GPT-2 transformer baseline (MDLM with causal=False)
+│   ├── transformer_v2.py    # D_modern: RoPE + SwiGLU + U-Net + 6-way AdaLN + QK-norm
+│   ├── muon.py              # Muon optimizer (NS orthogonalization, weight_decay support)
+│   ├── hybrid_model.py      # DiffuMambaH + QuokkaBlock (matches main repo architecture)
+│   ├── adaln.py             # AdaLN primitives (zero-init modulation)
+│   └── data.py              # TokenDataset, DataLoader helpers
+├── training/
+│   ├── train_dmodern_30m.py       # D_modern 30M (val 5.272 MinSNR γ=5)
+│   ├── train_dmodern_125m.py      # D_modern 125M on 10B (val 4.499 MinSNR γ=5)
+│   ├── train_published_baseline.py # Faithful MDLM reproduction (AdamW+cosine)
+│   ├── train_mamba3_30m.py        # Mamba3 30M (val 5.666 MinSNR γ=5)
+│   ├── sweep_variants_3seeds.py   # A/B/C/D/E variants × 3 seeds (RoPE/SwiGLU/U-Net/depth)
+│   ├── sweep_muon_config.py       # Cross-agent Muon config match (5 configs)
+│   ├── sweep_rope_swiglu_ablation.py  # 2×2 RoPE/SwiGLU isolation (RoPE = 95%)
+│   ├── sweep_ns_precision.py      # bf16/fp16/fp32 NS test (all identical)
+│   └── sweep_transformer_lr.py    # Transformer LR sensitivity study
+├── probes/
+│   ├── generation_multi_seed.py   # 10-seed generation + category analysis (MAIN finding)
+│   ├── sampler_ablation.py        # Greedy/nucleus/top-k comparison (top-k=50 best)
+│   └── cloze_basic.py             # Fill-in-the-blank factual probe
+├── eval/
+│   ├── standard_nll.py            # 3 metrics: proper ELBO, MinSNR γ=5, 1/t ELBO
+│   ├── profile_vram.py            # VRAM profiler (validates scale-up)
+│   └── download_fineweb_10b.py    # 10B tokens with chunked .npy save
+├── README.md                      # user-facing overview
+├── CLAUDE.md                      # agent context + "killed vs defensible" table
+└── HANDOFF_nvidia.md              # this file
 ```
 
 ---
@@ -223,7 +213,7 @@ muon_exp/
 
 ```python
 # In mdlm_mamba3_converge.py, change:
-RESUME_CKPT = 'muon_exp/outputs/mamba3_converge/checkpoint_56000.pt'
+RESUME_CKPT = 'outputs/mamba3_converge/checkpoint_56000.pt'
 TOTAL_STEPS = 65000  # ~epoch 8.5
 ```
 

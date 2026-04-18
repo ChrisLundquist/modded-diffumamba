@@ -4,6 +4,8 @@ A [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt)-style researc
 
 The goal: use [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) methodology to systematically find the fastest training configuration for discrete diffusion LMs on consumer AMD hardware.
 
+> **Parallel NVIDIA (RTX 5090) experiments**: see [`nvidia/`](nvidia/) for transformer baselines (D_modern = RoPE+SwiGLU+QK-norm), published MDLM reproduction, 3-metric ELBO eval, and cross-agent replication of Muon-config sensitivity. Key cross-validated findings: (1) Muon-for-Mamba3 is config-sensitive, not hardware-specific (gamma≤2, in_proj routing) — (2) NS precision (bf16/fp16/fp32) does not matter — (3) **ELBO improvements do not translate to generation coherence at 125M/10B**. Start with [`nvidia/CLAUDE.md`](nvidia/CLAUDE.md).
+
 ## What is this?
 
 **Masked diffusion LMs** (MDLM) train by progressively masking tokens and learning to unmask them — like BERT meets diffusion. Recent work shows they can match autoregressive LMs at scale ([LLaDA](https://arxiv.org/abs/2502.09992), 8B params) while enabling parallel generation.
