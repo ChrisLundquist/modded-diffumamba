@@ -50,6 +50,15 @@ Current status: Mamba3 non-MIMO works. MIMO configs silently fall back to non-MI
 image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy.
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
+**tok_emb wants Muon too (refutes modded-nanogpt lore, 2026-04-18).** The geometric
+analysis (results/geometry/REPORT.md) found tok_emb is the ONLY matrix showing the
+classic Huh-2021 simplicity-bias signature under Adam (stable rank 0.014→0.009,
+sigma_max 56→77 over 10k→50k steps). Routing tok_emb + tied lm_head through Muon-VS
+(flag: --muon_tok_emb) saves -0.115 ± 0.011 nats at 5k (t=-18.94, 3 seeds paired),
+with same muon_lr=0.01 as blocks and no throughput hit. Contradicts the
+modded-nanogpt convention that "Muon should only be used for hidden weight layers."
+10k validation pending. Generation impact untested but plausible (see HANDOFF.md).
+
 **Best generative model: 10L×640d @ 30k steps** (111.7M params, Mamba3 Triton non-MIMO)
 - **gen-PPL = 54.3** under GPT-2 small with top-k=50 (beats MDLM paper's 82 at 169M/1M steps)
 - val_loss ELBO ≈ 4.75, training at bs=4 on FineWeb-Edu
@@ -58,11 +67,13 @@ Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 **Best configuration (validated at 10000 steps, 3 seeds, quokka 31.5M):**
 - Muon-VS (variance-scaled) muon_lr=0.01 + AdamW lr=3e-4 (auxiliary)
 - out_proj included in Muon routing (--muon_out_proj)
+- **tok_emb + tied lm_head in Muon routing (--muon_tok_emb)** — 5k-validated only
 - Min-SNR gamma=1.5 (gamma barely matters — 1.5 vs 5 is ~0.015 nats)
 - Cosine LR schedule, SwiGLU MLP
 - All-Mamba, additive merge (hybrid attention hurts at this scale)
 - **FineWeb-Edu** data (beats plain FineWeb by 0.07 nats on val_loss — but see below)
-- val_loss = 5.07 ± 0.08 vs Adam 5.71 ± 0.03 (0.64 nat advantage)
+- val_loss = 5.07 ± 0.08 vs Adam 5.71 ± 0.03 (0.64 nat advantage, WITHOUT muon_tok_emb)
+- With `--muon_tok_emb` at 5k: -0.115 nats further (t=-18.94, 3 seeds, paired)
 
 **Sampler bugs found & fixed (2026-04-17):**
 - bf16 Gumbel-max truncated noise → effective low-temperature collapse

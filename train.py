@@ -527,6 +527,12 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
                 and "conv1d" not in name
                 and (args.muon_out_proj or "out_proj" not in name)
             )
+            # Geometric-analysis follow-up: the only matrix showing classic
+            # Huh-2021 simplicity-bias decay is the Adam-routed tok_emb.
+            # lm_head shares weight with tok_emb (see model.py), so routing
+            # tok_emb also routes lm_head.
+            if args.muon_tok_emb and "tok_emb" in name and p.ndim >= 2:
+                is_hidden_2d = True
             if is_hidden_2d:
                 muon_params.append(p)
             else:
@@ -805,6 +811,8 @@ def parse_args():
                    help="Muon variant: base, mousse (curvature-aware), vs (variance-scaled)")
     p.add_argument("--muon_out_proj", action="store_true",
                    help="Include out_proj in Muon routing (5090 agent found this helps)")
+    p.add_argument("--muon_tok_emb", action="store_true",
+                   help="Route tok_emb (+ tied lm_head) through Muon instead of Adam")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,

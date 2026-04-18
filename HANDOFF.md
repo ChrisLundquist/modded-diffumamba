@@ -5,7 +5,7 @@
 ```bash
 # REPRO current best (quokka 31M, ~40 min)
 python train.py --config quokka --optimizer muon --muon_variant vs \
-  --muon_lr 0.01 --adam_lr 3e-4 --muon_out_proj \
+  --muon_lr 0.01 --adam_lr 3e-4 --muon_out_proj --muon_tok_emb \
   --loss_weight minsnr --minsnr_gamma 1.5 \
   --data_dir data/fineweb-edu-10B \
   --batch_size 8 --max_steps 10000 --save_best --save_path ckpt.pt
@@ -27,6 +27,11 @@ python eval_gen_ppl.py           # our real north-star metric
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
+- **tok_emb (+ tied lm_head) in Muon routing helps (-0.115, t=-18.94, 5k, 3 seeds).**
+  Motivated by results/geometry/REPORT.md Fig 1-2: tok_emb is the ONLY matrix showing
+  Huh-2021 simplicity-bias decay under Adam. Refutes modded-nanogpt lore
+  ("Muon only for hidden weights"). Same muon_lr=0.01 as blocks, no throughput hit.
+  CLI: `--muon_tok_emb`. **10k validation pending.**
 - All-Mamba beats hybrid Mamba-attention (+0.06, t=3.7) at 31.5M scale
 - Additive merge beats gated merge (+0.24, t=7.5)
 - lr=0.01 beats lr=0.02 for Muon-VS (LR monotonically worse as it increases)
@@ -47,9 +52,10 @@ python eval_gen_ppl.py           # our real north-star metric
 - Depth vs width: no significant benefit at iso-params (8L×320d ≈ 4L×384d)
 - 1k-step n=1 rankings are unreliable
 
-## Best Configuration (validated at 10000 steps, 3 seeds)
+## Best Configuration (10k-validated is WITHOUT `--muon_tok_emb`)
 
 ```bash
+# 10k-validated best (val_loss = 5.07 ± 0.08)
 python train.py \
   --config quokka \
   --optimizer muon --muon_variant vs --muon_lr 0.01 --adam_lr 3e-4 \
@@ -58,9 +64,20 @@ python train.py \
   --lr_schedule cosine --warmup_steps 400 \
   --data_dir data/fineweb-edu-10B \
   --batch_size 8 --max_steps 10000 --save_best
+
+# Newer best at 5k (pending 10k validation) — add --muon_tok_emb
+# Expected 5k val_loss: 5.19 ± 0.05 (vs 5.31 without)
+python train.py \
+  --config quokka \
+  --optimizer muon --muon_variant vs --muon_lr 0.01 --adam_lr 3e-4 \
+  --muon_out_proj --muon_tok_emb \
+  --loss_weight minsnr --minsnr_gamma 1.5 \
+  --lr_schedule cosine --warmup_steps 400 \
+  --data_dir data/fineweb-edu-10B \
+  --batch_size 8 --max_steps 10000 --save_best
 ```
 
-**val_loss = 5.07 ± 0.08** (seeds: 4.976, 5.120, 5.111)
+**Previous best (10k, 3 seeds): val_loss = 5.07 ± 0.08** (seeds: 4.976, 5.120, 5.111)
 vs Adam baseline 5.71 ± 0.03 → **0.64 nat advantage**
 
 ## Best Generative Model (10L×640d scale-up)
@@ -95,7 +112,7 @@ Bugs fixed:
 - Temperature was applied to full transition distribution (including
   mask-retention prob); now applied to token distribution pre-mixing
 
-Improvement stack from Adam baseline (all validated at 10k, 3 seeds):
+Improvement stack from Adam baseline (10k, 3 seeds):
 
 | Improvement | Nats gained | Val loss |
 |-------------|-------------|----------|
@@ -104,11 +121,25 @@ Improvement stack from Adam baseline (all validated at 10k, 3 seeds):
 | + Variance scaling (VS) | -0.039 | 5.323 |
 | + out_proj in Muon routing | -0.057 | 5.266 |
 | + FineWeb-Edu + lr=0.01 | -0.197 | **5.069** |
-| **Total vs Adam** | **-0.642** | **5.069** |
+| **10k total vs Adam** | **-0.642** | **5.069** |
+| + tok_emb in Muon routing (5k only) | -0.115* | **~5.19 @ 5k** |
+
+*Measured at 5k: baseline 5.307 → +tok_emb 5.192, t=-18.94, n=3 paired.
+Expected 10k val_loss if gain scales: ~4.95, but 10k validation not yet run.
 
 out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
 Higher new_best variance (std 0.08 vs old 0.02) — seed 42 was lucky at 4.976;
 seeds 137/2024 were closer to 5.11. Still significant at p<0.05.
+
+**Caveat (ELBO vs generation):** nvidia/HANDOFF_nvidia.md shows ELBO and
+generation quality decouple sharply at 125M/10B scale. All improvements in
+this table are val_loss (ELBO). The tok_emb finding has a plausible but
+untested generation-quality upside: the geometric REPORT shows tok_emb
+under Adam loses 20% of its stable rank and gains 40% of sigma_max over
+10k→50k steps, temporally correlated with the 30k gen-PPL peak. Muon
+routing eliminates that decay. Whether it also fixes the post-30k gen
+regression is the obvious follow-up — requires training a 10L×640d run
+with `--muon_tok_emb` and running gen-PPL trajectory.
 
 ## Key Finding 1: Muon Beats Adam (definitive)
 
