@@ -98,10 +98,14 @@ def objective_loss(model, x, *, gamma, papl_alpha, papl_tau, t):
     ).reshape(B, T)
 
     if papl_alpha > 0:
+        # PAPL self-planner weight (Peng 2025 §3.4):
+        #   w_i = softmax_{masked positions}( log p(x_0^i | x_t) / tau )
+        # Score = log-prob the model assigns to the ground-truth token at
+        # masked position i (NOT max-confidence over the model's vocab).
         with torch.no_grad():
             logprobs = F.log_softmax(logits, dim=-1)
-            max_logprob = logprobs.max(dim=-1).values
-            scores = max_logprob / papl_tau
+            gt_logprob = logprobs.gather(-1, x.unsqueeze(-1)).squeeze(-1)  # [B, T]
+            scores = gt_logprob / papl_tau
             scores = scores.masked_fill(~mask, -1e4)
             w = F.softmax(scores, dim=1) * mask.float()
         papl_weight = 1.0 + papl_alpha * w

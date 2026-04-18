@@ -59,7 +59,8 @@ def compute_metrics(completion_lists):
 
 @torch.no_grad()
 def run_one(model, prefix, cont_len, prefix_len, top_k, temperature, n_steps,
-            batch_size, teacher, device):
+            batch_size, teachers, device):
+    """teachers: dict[name -> model]. NLL reported per teacher."""
     N = prefix.shape[0]
     all_samples = []
     t0 = time.time()
@@ -73,14 +74,13 @@ def run_one(model, prefix, cont_len, prefix_len, top_k, temperature, n_steps,
     gen_time = time.time() - t0
 
     completion_lists = [row[prefix_len:].tolist() for row in full]
-    metrics = compute_metrics(completion_lists)
-    nll = teacher_nll(full, prefix_len=prefix_len, teacher=teacher, device=device)
-    return {
-        **metrics,
-        'teacher_nll_mean': float(nll.mean()),
-        'teacher_nll_std': float(nll.std()),
-        'gen_seconds': gen_time,
-    }
+    out = {**compute_metrics(completion_lists), 'gen_seconds': gen_time}
+    for tname, tmodel in teachers.items():
+        nll = teacher_nll(full, prefix_len=prefix_len, teacher=tmodel, device=device)
+        key = 'teacher_nll' if tname == 'gpt2' else f'teacher_nll_{tname}'
+        out[f'{key}_mean'] = float(nll.mean())
+        out[f'{key}_std'] = float(nll.std())
+    return out
 
 
 def main():
@@ -95,6 +95,10 @@ def main():
     ap.add_argument('--top-k', type=int, default=50)
     ap.add_argument('--temperature', type=float, default=1.0)
     ap.add_argument('--n-steps', type=int, default=64)
+    ap.add_argument('--teachers', nargs='+',
+                    default=['gpt2',
+                             '/home/clundquist/muon_data/hf_models/rhysjones_gpt2-124M'],
+                    help='Teacher paths/IDs for NLL scoring (matches harness.py default).')
     args = ap.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -121,20 +125,27 @@ def main():
     print(f'\nPrompts: {N}  prefix_len={prefix_len}  cont_len={cont_len}')
     print(f'Sampler: top_k={args.top_k} temp={args.temperature} n_steps={args.n_steps}')
 
-    teacher = load_teacher('gpt2', device=device)
+    teachers = {}
+    for tpath in args.teachers:
+        tname = os.path.basename(tpath.rstrip('/')) or tpath
+        if tpath == 'gpt2':
+            tname = 'gpt2'
+        print(f'Loading teacher: {tname} ({tpath})')
+        teachers[tname] = load_teacher(tpath, device=device)
 
     # Real ceiling
     real_full = torch.cat([prefix, real_cont], dim=1)
     real_comp = [row[prefix_len:].tolist() for row in real_full]
-    real_metrics = compute_metrics(real_comp)
-    real_nll = teacher_nll(real_full, prefix_len=prefix_len, teacher=teacher, device=device)
     real_row = {
         'model': 'real_fineweb_edu', 'step': None,
-        **real_metrics,
-        'teacher_nll_mean': float(real_nll.mean()),
-        'teacher_nll_std': float(real_nll.std()),
+        **compute_metrics(real_comp),
     }
-    print(f'\nREAL ceiling: nll={real_row["teacher_nll_mean"]:.3f} '
+    for tname, tmodel in teachers.items():
+        rn = teacher_nll(real_full, prefix_len=prefix_len, teacher=tmodel, device=device)
+        key = 'teacher_nll' if tname == 'gpt2' else f'teacher_nll_{tname}'
+        real_row[f'{key}_mean'] = float(rn.mean())
+        real_row[f'{key}_std'] = float(rn.std())
+    print(f'\nREAL ceiling: nll(gpt2)={real_row["teacher_nll_mean"]:.3f} '
           f'dist4={real_row["distinct_4"]:.3f} rep4={real_row["rep_4"]:.3f}')
 
     model = build_model(spec, device)
@@ -151,13 +162,15 @@ def main():
 
         r = run_one(model, prefix, cont_len, prefix_len,
                     args.top_k, args.temperature, args.n_steps,
-                    args.batch_size, teacher, device)
+                    args.batch_size, teachers, device)
         r['model'] = args.model
         r['step'] = step
         r['val_loss'] = val_loss
         rows.append(r)
-        print(f'  nll={r["teacher_nll_mean"]:.3f}  '
-              f'dist4={r["distinct_4"]:.3f}  rep4={r["rep_4"]:.3f}  '
+        nll_keys = [k for k in r if k.endswith('_mean') and 'teacher_nll' in k]
+        nll_str = '  '.join(f'{k.replace("teacher_nll_","").replace("_mean","")}={r[k]:.3f}'
+                            for k in nll_keys)
+        print(f'  {nll_str}  dist4={r["distinct_4"]:.3f}  rep4={r["rep_4"]:.3f}  '
               f'uniq={r["uniq_token_ratio"]:.3f}  '
               f'val_loss={val_loss if val_loss is not None else "-"}  '
               f'gen={r["gen_seconds"]:.1f}s')

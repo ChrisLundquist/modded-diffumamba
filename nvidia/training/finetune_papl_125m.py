@@ -71,12 +71,15 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
     ).reshape(B, T)
 
     if alpha > 0:
-        # PAPL self-planner weight: w_i = softmax over masked positions of
-        # (max_logprob_i / tau). Detached — it's a weighting, not a target.
+        # PAPL self-planner weight (Peng 2025 §3.4):
+        #   w_i = softmax_{masked positions}( log p(x_0^i | x_t) / tau )
+        # i.e., score positions by the model's log-probability of the
+        # GROUND-TRUTH token at that position (during training x_0 is known).
+        # Detached — it's a weighting, not a target.
         with torch.no_grad():
             logprobs = F.log_softmax(logits, dim=-1)
-            max_logprob = logprobs.max(dim=-1).values  # [B, T]
-            scores = max_logprob / tau
+            gt_logprob = logprobs.gather(-1, x.unsqueeze(-1)).squeeze(-1)  # [B, T]
+            scores = gt_logprob / tau
             scores = scores.masked_fill(~mask, -1e4)
             w = F.softmax(scores, dim=1)
             w = w * mask.float()   # zero non-masked positions cleanly

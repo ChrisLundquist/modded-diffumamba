@@ -98,6 +98,45 @@ seed. That would support the VDM++ p(λ) > w(λ) conjecture in our setting.
 cannot shape joint-sample statistics at this scale. Next direction: SEDD
 (score-entropy, sequence-level) or explicit AR-distillation.
 
+## Methodological caveats (from code review, 2026-04-18)
+
+These limitations are baked into the harness as currently built. Report results
+with these in mind; do not advertise them away.
+
+1. **rhysjones AR teacher saw the held-out region.** The 124M
+   `rhysjones/gpt2-124M-edu-fineweb-10B` was trained on the entire
+   FineWeb-Edu 10B corpus, which includes our `[9.5e9 : 9.9e9]` prompt region.
+   Its NLL on AR-generated continuations is artificially deflated by
+   memorization of the surrounding text distribution. Use it as a *secondary*
+   teacher; rely on GPT-2-small (WebText, not FWE) for the unbiased number.
+   The 125M MDLM's training overlap is `[:9.5e9]` so it does NOT include
+   the prompt region — its rhysjones teacher_nll is fair.
+
+2. **top-k=50 has different operational meaning for AR vs. MDLM.** AR top-k
+   filters the next-token distribution conditioned on a *committed* prefix
+   (one position at a time). MDLM top-k filters the per-position marginal at
+   each unmask step, where surrounding masks are still uncertain. The
+   distributions sampled from are not directly comparable in entropy. Same
+   nominal `k` is not the same operational filter.
+
+3. **AR uses 2× more inference compute than MDLM** in our harness: 128
+   forward passes (one per generated token) vs MDLM's 64 (cont_len/2 demask
+   steps with 2 tokens/step). Inference compute is asymmetric in AR's favor.
+   Reported `gen_seconds` is also unfair because AR adapter has no KV cache.
+
+4. **PAPL implementation correctness** (fixed 2026-04-18 after code review):
+   the planner score uses log-probability of the GROUND-TRUTH token at each
+   masked position (`logprobs.gather(-1, x.unsqueeze(-1))`), per Peng 2025
+   Algorithm 1, NOT max-confidence-over-vocab. The latter was the buggy
+   first implementation that we killed and restarted before any results were
+   gathered.
+
+5. **Min-SNR γ=1.5 stacked on PAPL.** The Peng paper's formulation has no
+   Min-SNR clamp. We retain γ=1.5 by default to keep the fine-tune comparable
+   to the std baseline checkpoints (also trained with γ=1.5). For a
+   paper-faithful PAPL ablation, run with `--gamma-start 0` to disable the
+   clamp. This is a planned follow-up control, not a current result.
+
 ## Compute
 
 - Exp 4 (running): resume + 10k steps × 125M. ~3.7 hours on 5090. Current run.

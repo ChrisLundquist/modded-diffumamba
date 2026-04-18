@@ -40,10 +40,23 @@ def main():
     assert N_PROMPTS * window < region_len, "Not enough room in safe region"
 
     rng = np.random.default_rng(SEED)
-    offsets = rng.integers(SAFE_START, SAFE_END - window, size=N_PROMPTS * 3)
-    offsets = np.unique(offsets)[:N_PROMPTS]
-    assert len(offsets) >= N_PROMPTS, f'Not enough unique offsets: {len(offsets)}'
-    offsets = np.sort(offsets)
+    # Oversample, dedupe by offset, then enforce non-overlapping windows by
+    # spacing — otherwise two offsets within `window` bytes share tokens and
+    # diversity metrics get an artificial floor.
+    offsets = rng.integers(SAFE_START, SAFE_END - window, size=N_PROMPTS * 6)
+    offsets = np.unique(offsets)
+    offsets.sort()
+    kept = [int(offsets[0])]
+    for off in offsets[1:]:
+        if off - kept[-1] >= window:
+            kept.append(int(off))
+        if len(kept) >= N_PROMPTS:
+            break
+    assert len(kept) >= N_PROMPTS, f'Not enough non-overlapping offsets: {len(kept)}'
+    offsets = np.array(kept[:N_PROMPTS], dtype=np.int64)
+    # Sanity assertion: minimum gap >= window
+    gaps = np.diff(offsets)
+    assert gaps.min() >= window, f'Window overlap detected: min gap {gaps.min()} < {window}'
 
     prefix = np.zeros((N_PROMPTS, PREFIX_LEN), dtype=np.int64)
     cont = np.zeros((N_PROMPTS, CONT_LEN), dtype=np.int64)

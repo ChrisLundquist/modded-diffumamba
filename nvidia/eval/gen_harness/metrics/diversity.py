@@ -30,17 +30,25 @@ def distinct_n(completion_list, n):
     return sum(ratios) / len(ratios)
 
 
-def self_bleu_4(completion_list, max_refs=20):
+def self_bleu_4(completion_list, max_refs=20, seed=1729):
     """Approximate self-BLEU-4. For each sample, score against <=max_refs others.
 
     Uses a simple BLEU-4 with uniform weights (no brevity penalty for speed).
-    Lower = more diverse.
+    Lower = more diverse. References are selected by deterministic random
+    sampling (not first-N) so prompt-set ordering does not bias the metric.
     """
     if len(completion_list) < 2:
         return 0.0
+    import random
+    rng = random.Random(seed)
     scores = []
+    n = len(completion_list)
     for i, hyp in enumerate(completion_list):
-        refs = [completion_list[j] for j in range(len(completion_list)) if j != i][:max_refs]
+        others_idx = list(range(n))
+        others_idx.remove(i)
+        if len(others_idx) > max_refs:
+            others_idx = rng.sample(others_idx, max_refs)
+        refs = [completion_list[j] for j in others_idx]
         if not refs:
             continue
         precisions = []
