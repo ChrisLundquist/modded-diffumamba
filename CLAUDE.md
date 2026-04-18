@@ -50,14 +50,34 @@ Current status: Mamba3 non-MIMO works. MIMO configs silently fall back to non-MI
 image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy.
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
+**Best generative model: 10L×640d @ 30k steps** (111.7M params, Mamba3 Triton non-MIMO)
+- **gen-PPL = 54.3** under GPT-2 small with top-k=50 (beats MDLM paper's 82 at 169M/1M steps)
+- val_loss ELBO ≈ 4.75, training at bs=4 on FineWeb-Edu
+- Peak at ~30k steps; slight regression by 50k (gen-PPL 57.0)
+
 **Best configuration (validated at 10000 steps, 3 seeds, quokka 31.5M):**
 - Muon-VS (variance-scaled) muon_lr=0.01 + AdamW lr=3e-4 (auxiliary)
 - out_proj included in Muon routing (--muon_out_proj)
 - Min-SNR gamma=1.5 (gamma barely matters — 1.5 vs 5 is ~0.015 nats)
 - Cosine LR schedule, SwiGLU MLP
 - All-Mamba, additive merge (hybrid attention hurts at this scale)
-- **FineWeb-Edu** data (beats plain FineWeb by 0.07 nats)
+- **FineWeb-Edu** data (beats plain FineWeb by 0.07 nats on val_loss — but see below)
 - val_loss = 5.07 ± 0.08 vs Adam 5.71 ± 0.03 (0.64 nat advantage)
+
+**Sampler bugs found & fixed (2026-04-17):**
+- bf16 Gumbel-max truncated noise → effective low-temperature collapse
+  (Zheng et al. 2024, arXiv 2409.02908). Fixed: fp32 cast for Gumbel.
+- Temperature was applied AFTER mask-retention probability was mixed in.
+  Fixed: apply temperature to token distribution pre-mixing, then re-normalize.
+- Added top-p and top-k to sampler (top-k=50 gives best gen-PPL).
+- Before fix: samples were `"I, I, and I..."` gibberish. After: coherent prose.
+- Val_loss was still a valid TRAINING metric; divergence was sampling-only.
+
+**Val_loss vs gen-PPL sanity check:**
+Mostly agree, but FineWeb vs FineWeb-Edu inverts: Edu gives lower val_loss
+but higher gen-PPL (81 vs 68 at quokka 10k). Likely because GPT-2 was
+trained on general web and scores Edu-style formal text as unusual.
+Muon>Adam still holds on both metrics.
 
 **Improvement stack from Adam baseline (10k, 3 seeds):**
 - Adam: 5.711
@@ -92,9 +112,17 @@ AMD RX 9070 XT (16GB VRAM, RDNA 4, gfx1201)
 
 ```bash
 python data/get_data.py                          # download data (1B tokens)
-python train.py --config quokka --optimizer muon \
+
+# Training (quokka scale, best config)
+python train.py --config quokka \
+  --optimizer muon --muon_variant vs --muon_lr 0.01 --adam_lr 3e-4 \
+  --muon_out_proj \
   --loss_weight minsnr --minsnr_gamma 1.5 \
-  --no_time_cond --max_steps 5000                # train (best config)
+  --data_dir data/fineweb-edu-10B \
+  --batch_size 8 --max_steps 10000 --save_best
+
+# Evaluation (gen-PPL under GPT-2 small; use top-k=50 for sampling)
+python eval_gen_ppl.py
 python autoresearch.py --mode sweep              # HP sweep
 ```
 

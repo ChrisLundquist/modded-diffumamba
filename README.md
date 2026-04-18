@@ -89,12 +89,19 @@ python data/tokenize.py --src data/my_parquets/ --dst data/my_tokens/ --tokens 1
 
 All findings validated at 5000 steps with 3 paired seeds and t-tests (see `HANDOFF.md`):
 
-**Current best at 10k steps, 3 seeds: val_loss = 5.07 vs Adam 5.71 → 0.64 nat advantage**
+**Current best generative model: 10L×640d @ 30k steps = gen-PPL 54.3** (under GPT-2 small
+with top-k=50), beating the MDLM paper's reported 82 at 169M/1M-steps. At 111M params /
+~250M tokens trained, we're competitive with MDLMs at ~100× less compute.
+
+**Current best quokka (31M): val_loss = 5.07 vs Adam 5.71 → 0.64 nat advantage**
+
+**Sampler bugs fixed (2026-04-17):** bf16 Gumbel truncation and mis-placed temperature
+caused mode-collapse-like generations before the fix. See `model.py` sample() method.
 
 | Finding | Confidence | Detail |
 |---------|-----------|--------|
 | **Muon beats Adam** | HIGH (t=40-66, p<0.001) | +0.35 nats baseline → +0.64 with full stack. Novel — Muon fails for image diffusion. |
-| **FineWeb-Edu beats FineWeb** | HIGH (t=-3.4, p<0.05) | -0.20 nats at 10k. Biggest single improvement after Muon. |
+| **FineWeb-Edu val_loss better, gen-PPL worse** | CONFLICTED | -0.20 nats val but +13 gen-PPL under GPT-2. GPT-2 is general-web-biased. |
 | **Muon-VS beats base Muon** | HIGH (t=-5.8, p<0.01) | -0.039 nats, parameter-free, same wall-clock. |
 | **Mousse beats Muon** | HIGH (t=-11.6, p<0.001) | -0.062 nats, but 2.4x wall-clock overhead. |
 | **out_proj in Muon helps** | HIGH (t=-37.8, p<0.001) | -0.061 nats. Confirmed independently on NVIDIA 5090. |

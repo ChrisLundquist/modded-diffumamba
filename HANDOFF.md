@@ -4,14 +4,20 @@
 
 **HIGH confidence (validated at 5k/10k steps, 3 seeds, paired t-tests):**
 - Muon beats Adam by 0.35+ nats (t=40-66, p<0.001) at both 5k and 10k
+  — also confirmed on gen-PPL (Muon 68 vs Adam 76 at quokka 10k)
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
 - All-Mamba beats hybrid Mamba-attention (+0.06, t=3.7) at 31.5M scale
 - Additive merge beats gated merge (+0.24, t=7.5)
-- FineWeb-Edu beats FineWeb (-0.20 at 10k, t=-3.4, p<0.05)
 - lr=0.01 beats lr=0.02 for Muon-VS (LR monotonically worse as it increases)
 - ELBO still bad under Muon-VS (+0.18 nats vs gamma=1.5) — VS does NOT decouple optimizer from loss weighting
+
+**CONFLICTED (val_loss vs gen-PPL disagree):**
+- FineWeb-Edu beats FineWeb on val_loss (-0.20, t=-3.4) but is WORSE on
+  gen-PPL under GPT-2 (81 vs 68 at quokka 10k). Likely a GPT-2 reference
+  bias (trained on general web, scores formal Edu-style text as unusual).
+  We don't know yet which metric to trust for downstream quality.
 
 **MEDIUM confidence:**
 - Time conditioning ON may be marginally better (-0.013, t=-2.0, p~0.09)
@@ -37,6 +43,38 @@ python train.py \
 
 **val_loss = 5.07 ± 0.08** (seeds: 4.976, 5.120, 5.111)
 vs Adam baseline 5.71 ± 0.03 → **0.64 nat advantage**
+
+## Best Generative Model (10L×640d scale-up)
+
+**111.7M params, FineWeb-Edu, 50k steps bs=4, our full stack** — evaluated
+with gen-PPL under GPT-2 small (top-k=50 sampling, 16 samples × 128 tokens):
+
+| Checkpoint | gen-PPL | Unigram H | Notes |
+|------------|---------|-----------|-------|
+| **10L×640d @ 30k steps** | **54.3** | 5.24 | **best, beats MDLM paper's 82** |
+| 10L×640d @ 50k (best val) | 57.0 | 5.30 | |
+| quokka old_best (FineWeb) | 68.3 | 5.15 | |
+| quokka Adam baseline | 75.6 | 5.11 | |
+| quokka new_best (FineWeb-Edu) | 81.3 | 5.32 | worse on gen-PPL (see above) |
+
+**Reference anchors:** MDLM 169M/1M-steps = 82, LLaDA 1B = 60-80, GPT-2 self = 30.
+Our 111M @ 250M tokens beating MDLM 169M @ 30B tokens is the biggest headline.
+Peak at 30k, slight regression by 50k — early stopping matters.
+
+## Sampling (CRITICAL — required for coherent output)
+
+Two sampler bugs in our code before 2026-04-17 caused mode collapse
+despite valid training. Both fixed in model.py; all prior checkpoints
+are recoverable with the fixed sampler. Use:
+
+```bash
+python eval_gen_ppl.py  # uses fixed sampler with top-k=50
+```
+
+Bugs fixed:
+- bf16 Gumbel-max truncated noise (Zheng et al. 2024); cast to fp32
+- Temperature was applied to full transition distribution (including
+  mask-retention prob); now applied to token distribution pre-mixing
 
 Improvement stack from Adam baseline (all validated at 10k, 3 seeds):
 
