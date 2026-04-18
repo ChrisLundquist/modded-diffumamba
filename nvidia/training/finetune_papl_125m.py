@@ -1,0 +1,252 @@
+"""Fine-tune 125M D_modern for 10k steps with PAPL loss (Peng et al. 2025).
+
+Signal test: resume from checkpoint_40000.pt (diversity peak under std MDLM
+training — distinct_4=0.87, rep_4=0.131) and train 10k more steps with the
+planner-aware path-learning loss instead of vanilla MinSNR-ELBO.
+
+Hypothesis: std MDLM at step 50k regresses on generation metrics
+(distinct_4 0.87→0.85, rep_4 0.13→0.16) while ELBO keeps dropping.
+If PAPL fixes the train/sampler mismatch, the fine-tuned model at equivalent
+step 50k should retain or improve on the 40k generation metrics.
+
+PAPL loss: L = − Σ_i (1/M) · (1 + α · w_i) · log p(x_0^i | x_t)
+where w_i = softmax_{masked positions}(max_logprob_i / τ)
+— i.e., reweight each masked position by the self-planner's probability
+of unmasking it next.
+
+α=0 recovers vanilla MDLM. Paper defaults α=1.0, τ=1.0. We match Min-SNR γ=1.5
+from the original recipe so the only change is the per-position reweighting.
+"""
+
+import argparse
+import os
+import sys
+import time
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+from torch.utils.data import DataLoader
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+from transformer_v2 import TransformerV2  # noqa: E402
+from muon import Muon  # noqa: E402
+from data import TokenDataset  # noqa: E402
+
+torch.set_float32_matmul_precision('high')
+
+MASK_TOKEN = 50257
+MICRO_BATCH = 16
+GRAD_ACCUM = 8
+SEQ_LEN = 1024
+LOG_EVERY = 500
+CHECKPOINT_EVERY = 5000
+
+MUON_LR = 0.01
+EMBED_LR = 1e-3
+MIN_SNR_GAMMA = 1.5
+
+N_LAYER = 12
+N_EMBD = 768
+N_HEAD = 12
+VOCAB_SIZE = 50258
+
+DATA_PATH = '/home/clundquist/muon_data/fineweb_10B.npy'
+RESUME_CKPT = '/mnt/d/code/gpt-slide/muon_exp/outputs/125m_10b_dmodern/checkpoint_40000.pt'
+OUTPUT_DIR = '/mnt/d/code/gpt-slide/muon_exp/outputs/125m_papl_finetune'
+
+
+def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
+    B, T = x.shape
+    device = x.device
+    t = torch.rand(B, 1, device=device) * 0.95 + 0.05
+    k = 5.0
+    alpha_t = 1.0 - torch.exp(-k * t)
+    mask = torch.rand(B, T, device=device) < alpha_t
+    mask_tokens = torch.full_like(x, MASK_TOKEN)
+    x_t = torch.where(mask, mask_tokens, x)
+    logits = model(x_t, causal=False)[..., :MASK_TOKEN]
+    per_token_loss = F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)), x.reshape(-1), reduction='none'
+    ).reshape(B, T)
+
+    if alpha > 0:
+        # PAPL self-planner weight: w_i = softmax over masked positions of
+        # (max_logprob_i / tau). Detached — it's a weighting, not a target.
+        with torch.no_grad():
+            logprobs = F.log_softmax(logits, dim=-1)
+            max_logprob = logprobs.max(dim=-1).values  # [B, T]
+            scores = max_logprob / tau
+            scores = scores.masked_fill(~mask, -1e4)
+            w = F.softmax(scores, dim=1)
+            w = w * mask.float()   # zero non-masked positions cleanly
+        papl_weight = 1.0 + alpha * w  # [B, T]
+    else:
+        papl_weight = torch.ones_like(per_token_loss)
+
+    mask_float = mask.float()
+    weighted = per_token_loss * mask_float * papl_weight
+    per_sample = weighted.sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
+    elbo_weight = (k * torch.exp(-k * t) / (1.0 - torch.exp(-k * t))).clamp(max=min_snr_gamma)
+    return (per_sample * elbo_weight.squeeze(1)).mean()
+
+
+def eval_mdlm_standard(model, val_x):
+    """Standard Min-SNR ELBO eval (alpha=0 equivalent). Comparable to train_dmodern_125m's eval."""
+    model.eval()
+    device = val_x.device
+    n_val = val_x.shape[0]
+    total_loss = 0.0
+    n_points = 0
+    k = 5.0
+    eval_rng = torch.Generator(device=device)
+    eval_rng.manual_seed(0)
+    with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+        for t_val in torch.linspace(0.05, 0.95, 20):
+            t_batch = torch.full((min(MICRO_BATCH, n_val), 1), t_val.item(), device=device)
+            batch_losses = []
+            for i in range(0, n_val, MICRO_BATCH):
+                vx = val_x[i:i + MICRO_BATCH]
+                bs = vx.shape[0]
+                t = t_batch[:bs]
+                alpha_t = 1.0 - torch.exp(-k * t)
+                mask = torch.rand(bs, vx.shape[1], device=device, generator=eval_rng) < alpha_t
+                mask_tokens = torch.full_like(vx, MASK_TOKEN)
+                x_t = torch.where(mask, mask_tokens, vx)
+                logits = model(x_t, causal=False)[..., :MASK_TOKEN]
+                per_token_loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)), vx.reshape(-1), reduction='none'
+                ).reshape(bs, -1)
+                elbo_weight = (k * torch.exp(-k * t) / (1.0 - torch.exp(-k * t))).clamp(max=MIN_SNR_GAMMA)
+                mask_float = mask.float()
+                per_sample = (per_token_loss * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
+                batch_losses.append((per_sample * elbo_weight.squeeze(1)).mean().item())
+            total_loss += sum(batch_losses) / len(batch_losses)
+            n_points += 1
+    return total_loss / n_points
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--alpha', type=float, default=1.0, help='PAPL reweight strength')
+    ap.add_argument('--tau', type=float, default=1.0, help='PAPL planner temperature')
+    ap.add_argument('--extra-steps', type=int, default=10000)
+    ap.add_argument('--resume', type=str, default=RESUME_CKPT)
+    ap.add_argument('--output-dir', type=str, default=OUTPUT_DIR)
+    args = ap.parse_args()
+
+    device = 'cuda'
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    print(f'Loading data (mmap)...')
+    all_tokens = np.load(DATA_PATH, mmap_mode='r')
+    n_total = len(all_tokens)
+    val_size = 500_000_000
+    train_tokens = all_tokens[:n_total - val_size]
+    val_tokens = all_tokens[n_total - val_size:]
+
+    torch.manual_seed(42)
+    model = TransformerV2(vocab_size=VOCAB_SIZE, n_layer=N_LAYER, n_head=N_HEAD,
+                          n_embd=N_EMBD, use_rope=True, use_swiglu=True,
+                          use_qk_norm=True).to(device)
+    print(f'Params: {model.param_count()/1e6:.1f}M')
+
+    muon_params, adamw_params = model.param_groups()
+
+    adam_opt = torch.optim.Adam(
+        [{'params': adamw_params, 'lr': EMBED_LR, 'betas': (0.9, 0.999)}])
+    muon_opt = Muon([{'params': muon_params}], lr=MUON_LR, momentum=0.95, ns_steps=5)
+
+    print(f'Resuming from {args.resume}...')
+    ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt['model_state_dict'])
+    adam_opt.load_state_dict(ckpt['adam_state_dict'])
+    muon_opt.load_state_dict(ckpt['muon_state_dict'])
+    start_step = ckpt['step']
+    baseline_val = ckpt.get('val_loss', None)
+    print(f'  resumed at step {start_step}, val_loss {baseline_val}')
+    del ckpt
+    torch.cuda.empty_cache()
+
+    n_val = min(1024, len(val_tokens) // SEQ_LEN)
+    val_x = torch.from_numpy(
+        val_tokens[:n_val * SEQ_LEN].astype(np.int64).reshape(n_val, SEQ_LEN)
+    ).to(device)
+
+    ds = TokenDataset(train_tokens, seq_len=SEQ_LEN)
+    g = torch.Generator(); g.manual_seed(12345)   # different seed vs original so batches differ
+    loader = DataLoader(ds, batch_size=MICRO_BATCH, shuffle=True, num_workers=4,
+                        pin_memory=True, drop_last=True, persistent_workers=True,
+                        generator=g)
+    data_iter = iter(loader)
+
+    # Re-verify baseline val (should be close to ckpt val_loss)
+    vloss0 = eval_mdlm_standard(model, val_x)
+    print(f'Re-verified baseline val (std Min-SNR): {vloss0:.4f}  (ckpt reported {baseline_val})')
+
+    print(f'\nPAPL fine-tune: alpha={args.alpha}, tau={args.tau}')
+    print(f'Steps {start_step} → {start_step + args.extra_steps} (constant LR)')
+
+    # Constant LR (no WSD decay for this 10k stretch)
+    for pg in adam_opt.param_groups:
+        pg['lr'] = EMBED_LR
+    for pg in muon_opt.param_groups:
+        pg['lr'] = MUON_LR
+
+    best_val = vloss0
+    t0 = time.time()
+    tokens_per_step = MICRO_BATCH * GRAD_ACCUM * SEQ_LEN
+
+    for local_step in range(args.extra_steps):
+        step = start_step + local_step
+
+        model.train()
+        for opt in [adam_opt, muon_opt]:
+            opt.zero_grad()
+        total_loss = 0.0
+        for _ in range(GRAD_ACCUM):
+            try:
+                x, _ = next(data_iter)
+            except StopIteration:
+                data_iter = iter(loader)
+                x, _ = next(data_iter)
+            x = x.to(device)
+            with torch.autocast('cuda', dtype=torch.bfloat16):
+                loss = papl_mdlm_loss(model, x, alpha=args.alpha, tau=args.tau) / GRAD_ACCUM
+            loss.backward()
+            total_loss += loss.item()
+        torch.nn.utils.clip_grad_norm_(adamw_params, 1.0)
+        for opt in [adam_opt, muon_opt]:
+            opt.step()
+
+        if local_step % LOG_EVERY == 0 or local_step == args.extra_steps - 1:
+            vloss = eval_mdlm_standard(model, val_x)
+            elapsed = time.time() - t0
+            tps = (local_step + 1) * tokens_per_step / elapsed if elapsed > 0 else 0
+            if vloss < best_val:
+                best_val = vloss
+            print(f'  step {step:6d} (+{local_step+1:5d}) | train {total_loss:.4f} | '
+                  f'val(std) {vloss:.4f} | best {best_val:.4f} | '
+                  f'{tps/1e3:.0f}K tok/s | {elapsed:.0f}s', flush=True)
+
+        if (local_step + 1) % CHECKPOINT_EVERY == 0 or local_step == args.extra_steps - 1:
+            ckpt_path = os.path.join(args.output_dir, f'checkpoint_{step+1}.pt')
+            torch.save({
+                'step': step + 1,
+                'model_state_dict': model.state_dict(),
+                'adam_state_dict': adam_opt.state_dict(),
+                'muon_state_dict': muon_opt.state_dict(),
+                'val_loss': vloss if local_step % LOG_EVERY == 0 else best_val,
+                'papl_alpha': args.alpha,
+                'papl_tau': args.tau,
+                'resumed_from': args.resume,
+            }, ckpt_path)
+            print(f'  Checkpoint: {ckpt_path}', flush=True)
+
+    print(f'\nDone. Best val (std Min-SNR ELBO): {best_val:.4f}  '
+          f'(baseline at start: {vloss0:.4f})')
+    print(f'Total time: {(time.time()-t0)/3600:.2f} hours')
+
+
+if __name__ == '__main__':
+    main()
