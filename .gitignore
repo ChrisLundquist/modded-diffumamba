@@ -21,6 +21,12 @@ results/*.json
 wandb/
 .cache/
 
+# NVIDIA subdirectory local artifacts
+nvidia/outputs/
+nvidia/data_cache/
+nvidia/checkpoints/*.pt
+nvidia/checkpoints/*.npy
+
 # ROCm workaround binary (rebuild from stub_rocprof.c)
 *.so
 
