@@ -23,6 +23,12 @@ from hybrid_model import DiffuMambaH           # noqa: E402
 HARNESS_DIR = os.path.abspath(os.path.join(THIS_DIR, '..'))
 sys.path.insert(0, HARNESS_DIR)
 from samplers.mdlm_topk import demask_topk_prefix  # noqa: E402
+from samplers.mdlm_maskgit import maskgit_prefix  # noqa: E402
+
+SAMPLERS = {
+    'topk': demask_topk_prefix,
+    'maskgit': maskgit_prefix,
+}
 
 
 # Model zoo: (factory, checkpoint_path). Paths relative to /mnt/d/code/gpt-slide/
@@ -72,6 +78,31 @@ MODEL_SPECS = {
         kwargs=dict(vocab_size=50258, n_layer=12, n_head=12, n_embd=768,
                     use_rope=True, use_swiglu=True, use_qk_norm=True),
     ),
+    # Objective-ablation fine-tunes (Exps 1-3 in experiments_plan.md)
+    'd_modern_125m_baseline_50k': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/125m_baseline_finetune/checkpoint_50000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=12, n_head=12, n_embd=768,
+                    use_rope=True, use_swiglu=True, use_qk_norm=True),
+    ),
+    'd_modern_125m_gamma_decay_50k': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/125m_gamma_decay_finetune/checkpoint_50000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=12, n_head=12, n_embd=768,
+                    use_rope=True, use_swiglu=True, use_qk_norm=True),
+    ),
+    'd_modern_125m_t_curr_50k': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/125m_t_curriculum_finetune/checkpoint_50000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=12, n_head=12, n_embd=768,
+                    use_rope=True, use_swiglu=True, use_qk_norm=True),
+    ),
+    'd_modern_125m_papl_t_curr_50k': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/125m_papl_t_curr_finetune/checkpoint_50000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=12, n_head=12, n_embd=768,
+                    use_rope=True, use_swiglu=True, use_qk_norm=True),
+    ),
     'mamba3_30m': dict(
         family='diffumamba_h',
         ckpt='muon_exp/outputs/mamba3_converge/checkpoint_56000.pt',
@@ -107,13 +138,25 @@ class MDLMAdapter:
         return cls(name, model, device)
 
     @torch.no_grad()
-    def generate(self, prefix_ids, cont_len=128, top_k=50, temperature=1.0, n_steps=None):
-        """prefix_ids: LongTensor [B, P]. Returns LongTensor [B, P + cont_len]."""
-        return demask_topk_prefix(
-            self.model, prefix_ids, cont_len,
-            top_k=top_k, temperature=temperature, n_steps=n_steps,
-            device=self.device,
-        )
+    def generate(self, prefix_ids, cont_len=128, top_k=50, temperature=1.0,
+                 n_steps=None, sampler='topk', **sampler_kwargs):
+        """prefix_ids: LongTensor [B, P]. Returns LongTensor [B, P + cont_len].
+
+        sampler: 'topk' (default, pre-nucleus ordering, one-shot) or 'maskgit'
+            (iterative confidence-based remasking).
+        """
+        if sampler not in SAMPLERS:
+            raise KeyError(f'Unknown sampler: {sampler}. Available: {list(SAMPLERS)}')
+        fn = SAMPLERS[sampler]
+        kwargs = dict(top_k=top_k, temperature=temperature, device=self.device)
+        if sampler == 'maskgit':
+            # n_steps for MaskGIT defaults to 12 (see sampler module)
+            if n_steps is not None:
+                kwargs['n_steps'] = n_steps
+        else:
+            kwargs['n_steps'] = n_steps
+        kwargs.update(sampler_kwargs)
+        return fn(self.model, prefix_ids, cont_len, **kwargs)
 
     def unload(self):
         del self.model

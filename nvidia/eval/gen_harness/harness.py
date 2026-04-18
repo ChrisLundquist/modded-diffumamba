@@ -70,7 +70,7 @@ def run_real_baseline(prompts, device, skip_teacher=False, teachers=None):
 
 
 def run_model(name, prompts, device, batch_size, top_k, temperature, n_steps,
-              skip_teacher=False, teachers=None):
+              skip_teacher=False, teachers=None, sampler='topk'):
     prefix = prompts['prefix_ids']
     cont_len = int(prompts['cont_len'])
     prefix_len = int(prompts['prefix_len'])
@@ -78,14 +78,17 @@ def run_model(name, prompts, device, batch_size, top_k, temperature, n_steps,
 
     if name in AR_SPECS:
         adapter = ARAdapter.from_spec(name, device=device)
+        sampler_arg = {}  # AR ignores sampler choice
     else:
         adapter = MDLMAdapter.from_spec(name, device=device)
+        sampler_arg = {'sampler': sampler}
     all_samples = []
     t0 = time.time()
     for i in range(0, N, batch_size):
         chunk = prefix[i:i + batch_size]
         out = adapter.generate(chunk, cont_len=cont_len, top_k=top_k,
-                               temperature=temperature, n_steps=n_steps)
+                               temperature=temperature, n_steps=n_steps,
+                               **sampler_arg)
         all_samples.append(out.cpu())
         if i == 0:
             print(f'  [{name}] first batch done in {time.time() - t0:.1f}s')
@@ -94,9 +97,10 @@ def run_model(name, prompts, device, batch_size, top_k, temperature, n_steps,
     print(f'  [{name}] generated {N} in {gen_time:.1f}s ({N / gen_time:.2f}/s)')
 
     completion_lists = as_completion_lists(full, prefix_len)
+    sampler_label = sampler if name not in AR_SPECS else 'ar_topk'
     result = {
         'model': name,
-        'sampler': f'topk{top_k}_temp{temperature}_steps{n_steps or "half"}',
+        'sampler': f'{sampler_label}_k{top_k}_T{temperature}_steps{n_steps or "default"}',
         'n_samples': N,
         'gen_seconds': gen_time,
     }
@@ -127,7 +131,9 @@ def main():
     ap.add_argument('--top-k', type=int, default=50)
     ap.add_argument('--temperature', type=float, default=1.0)
     ap.add_argument('--n-steps', type=int, default=None,
-                    help='Demasking steps (default: cont_len//2).')
+                    help='Demasking steps (topk default cont_len//2; maskgit default 12).')
+    ap.add_argument('--sampler', choices=['topk', 'maskgit'], default='topk',
+                    help='MDLM sampler (AR models always use ancestral top-k).')
     ap.add_argument('--skip-teacher', action='store_true')
     ap.add_argument('--no-append', action='store_true',
                     help='Do not append to leaderboard.jsonl (just print).')
@@ -177,6 +183,7 @@ def main():
                 batch_size=args.batch_size, top_k=args.top_k,
                 temperature=args.temperature, n_steps=args.n_steps,
                 skip_teacher=skip_teacher, teachers=teachers,
+                sampler=args.sampler,
             )
             saved_samples[name] = samples
         results.append(r)
