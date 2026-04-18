@@ -509,16 +509,15 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
     """Build Muon+AdamW hybrid optimizer, or plain AdamW."""
 
     if args.optimizer == "muon":
-        muon_params = []
+        block_muon_params = []
+        emb_muon_params = []
         adam_params = []
 
         for name, p in model.named_parameters():
             if not p.requires_grad:
                 continue
-            # Muon for 2D projection weights in mamba blocks
-            # Exclude: AdaLN, norms, SSM decay (A_log), conv kernels
-            # out_proj: optionally include (5090 agent found it helps)
-            is_hidden_2d = (
+            # Block Muon: 2D projection weights in mamba blocks
+            is_block = (
                 p.ndim >= 2
                 and "blocks" in name
                 and "adaln" not in name
@@ -527,34 +526,54 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
                 and "conv1d" not in name
                 and (args.muon_out_proj or "out_proj" not in name)
             )
-            # Geometric-analysis follow-up: the only matrix showing classic
-            # Huh-2021 simplicity-bias decay is the Adam-routed tok_emb.
-            # lm_head shares weight with tok_emb (see model.py), so routing
-            # tok_emb also routes lm_head.
-            if args.muon_tok_emb and "tok_emb" in name and p.ndim >= 2:
-                is_hidden_2d = True
-            if is_hidden_2d:
-                muon_params.append(p)
+            # Embedding Muon: opt-in via flags. lm_head rides on tok_emb via
+            # weight tying. pos_emb is a small extra matrix (max_seq_len x d_model).
+            is_emb = (
+                (args.muon_tok_emb and "tok_emb" in name and p.ndim >= 2)
+                or (args.muon_pos_emb and "pos_emb" in name and p.ndim >= 2)
+            )
+            if is_emb:
+                emb_muon_params.append(p)
+            elif is_block:
+                block_muon_params.append(p)
             else:
                 adam_params.append(p)
 
-        print(f"  Muon params: {sum(p.numel() for p in muon_params)/1e6:.1f}M "
-              f"({len(muon_params)} tensors)")
+        # If user sets a distinct emb LR, split emb into its own group; else
+        # merge emb into the block group for simplicity.
+        emb_lr = args.muon_emb_lr if args.muon_emb_lr is not None else args.muon_lr
+        separate_emb_group = emb_muon_params and emb_lr != args.muon_lr
+        if not separate_emb_group:
+            block_muon_params = block_muon_params + emb_muon_params
+            emb_muon_params = []
+
+        total_muon = sum(p.numel() for p in block_muon_params + emb_muon_params)
+        print(f"  Muon params: {total_muon/1e6:.1f}M "
+              f"({len(block_muon_params) + len(emb_muon_params)} tensors)")
         print(f"  Adam params: {sum(p.numel() for p in adam_params)/1e6:.1f}M "
               f"({len(adam_params)} tensors)")
+        if separate_emb_group:
+            print(f"  Embedding Muon group: {sum(p.numel() for p in emb_muon_params)/1e6:.1f}M "
+                  f"({len(emb_muon_params)} tensors) at lr={emb_lr}")
 
-        muon_group = dict(
-            params=muon_params, use_muon=True,
-            lr=args.muon_lr, momentum=args.muon_momentum,
-            weight_decay=args.muon_wd, ns_steps=args.ns_steps,
-            muon_variant=args.muon_variant,
-        )
         param_groups = [
-            muon_group,
-            dict(params=adam_params, use_muon=False,
-                 lr=args.adam_lr, betas=(0.9, args.adam_beta2),
-                 weight_decay=args.adam_wd),
+            dict(params=block_muon_params, use_muon=True,
+                 lr=args.muon_lr, base_lr=args.muon_lr,
+                 momentum=args.muon_momentum, weight_decay=args.muon_wd,
+                 ns_steps=args.ns_steps, muon_variant=args.muon_variant),
         ]
+        if separate_emb_group:
+            param_groups.append(
+                dict(params=emb_muon_params, use_muon=True,
+                     lr=emb_lr, base_lr=emb_lr,
+                     momentum=args.muon_momentum, weight_decay=args.muon_wd,
+                     ns_steps=args.ns_steps, muon_variant=args.muon_variant),
+            )
+        param_groups.append(
+            dict(params=adam_params, use_muon=False,
+                 lr=args.adam_lr, base_lr=args.adam_lr,
+                 betas=(0.9, args.adam_beta2), weight_decay=args.adam_wd),
+        )
         if args.muon_variant != "base":
             print(f"  Muon variant: {args.muon_variant}")
         return MuonAdamW(param_groups)
@@ -714,10 +733,11 @@ def train(args):
         lr_mult = get_lr_multiplier(step, args.warmup_steps, args.max_steps,
                                      schedule=args.lr_schedule)
         for group in optimizer.param_groups:
-            if group.get("use_muon", False):
-                group["lr"] = args.muon_lr * lr_mult
-            else:
-                group["lr"] = args.adam_lr * lr_mult
+            # base_lr is set in build_optimizer; fall back to args for backcompat
+            base_lr = group.get("base_lr")
+            if base_lr is None:
+                base_lr = args.muon_lr if group.get("use_muon", False) else args.adam_lr
+            group["lr"] = base_lr * lr_mult
 
         # Forward + loss
         if device.type == "cuda":
@@ -813,6 +833,12 @@ def parse_args():
                    help="Include out_proj in Muon routing (5090 agent found this helps)")
     p.add_argument("--muon_tok_emb", action="store_true",
                    help="Route tok_emb (+ tied lm_head) through Muon instead of Adam")
+    p.add_argument("--muon_pos_emb", action="store_true",
+                   help="Route pos_emb through Muon instead of Adam")
+    p.add_argument("--muon_emb_lr", type=float, default=None,
+                   help="LR for the Muon embedding group (tok_emb/pos_emb). "
+                        "If unset or equal to --muon_lr, emb params share the block group. "
+                        "If different, they get a separate param group with this LR.")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,
