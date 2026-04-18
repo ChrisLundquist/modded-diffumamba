@@ -16,14 +16,13 @@ The goal: use [Karpathy's autoresearch](https://github.com/karpathy/autoresearch
 
 ```bash
 # Install deps
-pip install torch numpy tiktoken huggingface_hub
+pip install torch numpy tiktoken huggingface_hub transformers
 
-# Download pre-tokenized FineWeb-10B (1B tokens, ~2GB)
-python data/get_data.py          # uses huggingface_hub
-# OR
-bash data/get_data.sh            # uses curl, no Python deps
+# Data: pick one (both ~2GB, 1B tokens, GPT-2 tokenized .bin shards)
+python data/get_data.py          # FineWeb-10B (kjj0/fineweb10B-gpt2)
+# FineWeb-Edu-10B shards: see data/fineweb-edu-10B/README.md for curl cmd
 
-# Train with best config (Muon-VS + out_proj + FineWeb-Edu)
+# TRAIN best quokka config (31.5M, ~40 min on RX 9070 XT)
 python train.py --config quokka \
   --optimizer muon --muon_variant vs --muon_lr 0.01 --adam_lr 3e-4 \
   --muon_out_proj \
@@ -31,9 +30,34 @@ python train.py --config quokka \
   --data_dir data/fineweb-edu-10B \
   --batch_size 8 --max_steps 10000 --save_best
 
-# Autoresearch: sweep Muon vs Adam
+# TRAIN largest model (10L×640d, 111.7M, 16GB VRAM max)
+python train_large.py            # staged: 10k→50k→100k with gating
+
+# EVALUATE with gen-PPL under GPT-2 small (authoritative quality metric)
+python eval_gen_ppl.py           # loads GPT-2, samples from checkpoints, scores
+
+# SAMPLE with sweep of sampler configs
+python sample_topp.py            # temperature × top-p × top-k grid
+
+# AUTORESEARCH sweeps
+python sweep_round3.py           # data × LR × loss × WD (Round 3)
 python autoresearch.py --mode compare_optimizers --budget_steps 500
 ```
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `model.py` | DiffuMamba3 architecture, MDLM diffusion, sampling (with top-p/top-k) |
+| `train.py` | Training loop, MuonAdamW with Muon-VS/Mousse variants, data loading |
+| `ssm.py` | PureSSM: pure-PyTorch SSM fallback (slower but device-agnostic) |
+| `eval_gen_ppl.py` | **Evaluation** — sample + GPT-2 scoring + diagnostics |
+| `sample_*.py` | Sampling scripts (checkpoint comparison, top-p sweep) |
+| `train_large.py` | Staged training for the 111M config with gating & periodic ckpts |
+| `sweep_*.py` | Various experiment sweeps (gamma, LR, 2×2 factorials, etc.) |
+| `proposals/` | Research proposals & evaluations from subagent reviews |
+| `HANDOFF.md` | **Recipe & findings** — read this for current best config |
+| `CLAUDE.md` | Project overview & key findings |
 
 ## Architecture
 

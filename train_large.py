@@ -1,4 +1,6 @@
-"""Train the largest model that fits in 16GB: 12L×640d (130.8M params).
+"""Train the largest model that fits in 16GB: 10L×640d (111.7M params) at bs=4.
+
+12L×640d (130M) OOMs at bs=8 with val+ckpt overhead. 10L at bs=4 leaves headroom.
 
 Starts with 10k steps as a promising-check. If val_loss < 5.07 (current
 quokka best), we have a sign the full stack transfers and can continue.
@@ -29,10 +31,10 @@ def run(max_steps, run_name, warmup=None):
     sys.argv = [
         "train.py",
         "--config", "quokka",
-        # Override config for 12L×640d
-        "--n_layers", "12",
+        # Override config for 10L×640d
+        "--n_layers", "10",
         "--d_model", "640",
-        "--batch_size", "8",
+        "--batch_size", "4",
         "--max_steps", str(max_steps),
         "--val_every", "500",
         "--log_every", "500",
@@ -88,33 +90,33 @@ def main():
     # Phase 1: 10k "promising" check (~42 min)
     # Gate: val_loss < 5.20 means the config transfers well enough to continue
     print(f"{'#'*60}")
-    print(f"# Phase 1: 12L×640d at 10k steps (gate: val_loss < 5.20)")
+    print(f"# Phase 1: 10L×640d at 10k steps (gate: val_loss < 5.20)")
     print(f"{'#'*60}")
-    r1 = run(10000, "12L640d_10k")
+    r1 = run(10000, "10L640d_10k")
 
     if r1["val_loss"] < 5.20 and r1["status"] == "OK":
         print(f"\n✓ Phase 1 promising (val_loss={r1['val_loss']:.4f}). Continuing to 50k.")
 
         # Phase 2: 50k (~3.5 hrs) — get into the data-efficient regime
         print(f"\n{'#'*60}")
-        print(f"# Phase 2: 12L×640d at 50k steps (gate: val_loss < 4.80)")
+        print(f"# Phase 2: 10L×640d at 50k steps (gate: val_loss < 4.80)")
         print(f"{'#'*60}")
-        r2 = run(50000, "12L640d_50k")
+        r2 = run(50000, "10L640d_50k")
 
         if r2["val_loss"] < 4.80 and r2["status"] == "OK":
             print(f"\n✓ Phase 2 still improving. Continuing to 100k.")
 
             # Phase 3: 100k (~7 hrs) — sample quality emerges
             print(f"\n{'#'*60}")
-            print(f"# Phase 3: 12L×640d at 100k steps (overnight run)")
+            print(f"# Phase 3: 10L×640d at 100k steps (overnight run)")
             print(f"{'#'*60}")
-            r3 = run(100000, "12L640d_100k")
+            r3 = run(100000, "10L640d_100k")
             print(f"\nPhase 3 done: val_loss={r3['val_loss']:.4f}")
         else:
             print(f"\n✗ Phase 2 below gate or failed (val_loss={r2['val_loss']:.4f}). Stopping.")
     else:
         print(f"\n✗ Phase 1 below gate or failed (val_loss={r1['val_loss']:.4f}). Stopping.")
-        print(f"  Reference: quokka 31.5M got 5.07 at 10k. 12L×640d should do better if well-tuned.")
+        print(f"  Reference: quokka 31.5M got 5.07 at 10k. 10L×640d should do better if well-tuned.")
 
 
 if __name__ == "__main__":

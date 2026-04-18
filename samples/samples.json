@@ -1,0 +1,349 @@
+[
+  {
+    "checkpoint": "final10k_new_best_s42",
+    "description": "FineWeb-Edu + lr=0.01 (best seed, 4.976)",
+    "samples": [
+      {
+        "sample_idx": 0,
+        "text": ", for the rest of the other, one, and the to the the. As\n the in which the the\nof the world, the, of the. the, St.\n. to the rest of the world, to be the subject of the world. The idea of the the was and of the 1960s, which to the, is the and what the problem was made.\nThe more was the, the\n, law of life,, E. health,, health, health, and, therefore, to be the rest and society.\nWe have to the aH.SThe was to a the the",
+        "metrics": {
+          "n_words": 91,
+          "distinct_4gram": 0.977,
+          "repetition_4gram": 0.023,
+          "avg_word_len": 3.26,
+          "punct_ratio": 0.067
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 1,
+        "text": " due to the use of the\n in the\n,.. C. I can, the areas of the rest of the body, and even in the ground.\nA the.. D.. First, a. the. According to of. the, to the importance of the U and...\n..S. In the U.S. Department. D.S.C.C. Department of, D.C.. U.\n...S. the state of the U. the U. I, 1990s,\nIns,, of course of the% of the onset of",
+        "metrics": {
+          "n_words": 75,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.85,
+          "punct_ratio": 0.133
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 2,
+        "text": ",\n. the, people, others, the.\n-. It is a short picture of the and.\n\n\n.. the. a person,,, the to, the a, and right.\n-. The will, in the rest of that the body.\n- In the.\nc. 6..\n, in A, M to\n 2.\n- 4. 1, M.\n2. All of the,,.e.\n[ 1.2...3 to1.3 A.2,.4.\nH the.. of..\nWhen",
+        "metrics": {
+          "n_words": 59,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.47,
+          "punct_ratio": 0.183
+        },
+        "category": "garbage"
+      },
+      {
+        "sample_idx": 3,
+        "text": " and others and the it.\nIt is, in, to a book and a\nThe of the, in the\n with a high school history of the,. in, the, and it are not that. of of the.S, the and it is one of the, and the, and to A. It has, of of it, of the, by\n the, and of to the the the it, the\n States, the the, of the\n States, the., the U. of the U. It is, the\ns, but the absence of the health of the and, in the",
+        "metrics": {
+          "n_words": 92,
+          "distinct_4gram": 0.978,
+          "repetition_4gram": 0.022,
+          "avg_word_len": 2.77,
+          "punct_ratio": 0.077
+        },
+        "category": "coherent"
+      }
+    ],
+    "category_counts": {
+      "coherent": 3,
+      "garbage": 1
+    }
+  },
+  {
+    "checkpoint": "final10k_new_best_s137",
+    "description": "FineWeb-Edu + lr=0.01 (typical)",
+    "samples": [
+      {
+        "sample_idx": 0,
+        "text": ", for-third\n the second, one, and the number of\n the way the the\nof the the the way the of the main part of the\n the\n\n. The, to the end of the world, to have the\n-\na. The first that is is is and said to are the the- to the the\nthe, in the state of nature.\nc. was the, the U.\nof St. with it. In the, right, it, and, will be to see the\nright.\nThe the, of the the U.SThe ability to\nin the",
+        "metrics": {
+          "n_words": 89,
+          "distinct_4gram": 0.953,
+          "repetition_4gram": 0.047,
+          "avg_word_len": 3.01,
+          "punct_ratio": 0.055
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 1,
+        "text": " belongs to a mix of the\n\n the\n,.\n C. I can is one part of the state of the Union, and then in the ground.\nA... v.. Smith, a.... to\n. the need for the importance of the United States...\n., F.S.www. J.A.C. W.C.C.A., D.C.. U.\n...S. of. U,S.\n J. Washington, p..\nIt is,,.D. The% of the\n\n",
+        "metrics": {
+          "n_words": 64,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.62,
+          "punct_ratio": 0.18
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 2,
+        "text": ".\n\n the.\n in which your the state\n-. There is a good state of it.\nThe. to to. the. a.\nA. the\nof the a person of it.\nL. It will be to the size of that the state.\n-. A.\nA. 6..\n- is.,. to to U.S-..\n.. of\n\n\n are of the. at.m.\nThe U.S of. the right to be.\nA. The out of it.\nH the.. of..\nThe",
+        "metrics": {
+          "n_words": 68,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.49,
+          "punct_ratio": 0.13
+        },
+        "category": "garbage"
+      },
+      {
+        "sample_idx": 3,
+        "text": " a man and\n of the. the\n,\n, to a state and, in that of the, in the\n with and the the history of the world. in,\n the and. of what that\ufffd of of the.\n, the and it is out of the, in the, and to it. It has, of of will, of the, by\n the, and of to the. the it, the\n of, the the, of the\n States, the., the U.\ns.. It is, \u2019s, but the absence of the health of the,,\ufffd the",
+        "metrics": {
+          "n_words": 83,
+          "distinct_4gram": 0.988,
+          "repetition_4gram": 0.013,
+          "avg_word_len": 2.8,
+          "punct_ratio": 0.087
+        },
+        "category": "coherent"
+      }
+    ],
+    "category_counts": {
+      "coherent": 3,
+      "garbage": 1
+    }
+  },
+  {
+    "checkpoint": "final10k_new_best_s2024",
+    "description": "FineWeb-Edu + lr=0.01",
+    "samples": [
+      {
+        "sample_idx": 0,
+        "text": ", including the people\u2019s, as opposed as the name of\n, is the the in of the the\nof the time the firstth of the. the, years, which leads to the end of the people, to have the\n of the them. The answer is the the to the point to the however, which to\n it is the, what the answer was said.\nThe this was of, the\n, and of course, with 1.5 on the 3, respectively, and by the need to which the\n of it.\n- What is the the 3.SThe was to\n the the",
+        "metrics": {
+          "n_words": 95,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 3.29,
+          "punct_ratio": 0.044
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 1,
+        "text": " due to the one of the events of the cause cause of infectious disease. It can, the parts of the body of the it, and not in the ground.\nA the the happened of the the community, the and the. According to St. the, and the nature of the disease is.. to that is, the disease of the disease. itself.\n is the the the the the disease the disease the of the virus, it is the 2.\n. a the disease, the part of the disease, the U. disease, etc..\nIt is of, of to of the age of the onset of",
+        "metrics": {
+          "n_words": 101,
+          "distinct_4gram": 0.99,
+          "repetition_4gram": 0.01,
+          "avg_word_len": 3.47,
+          "punct_ratio": 0.048
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 2,
+        "text": ".\n. the, people, animals, the U. is. This is a good part of the and.\n\n\n to, to the movement of the time, and the person has a place the world.\n-. It will be to the rest of the the world.\n- is the Journal of the. 6.1\n- the., in to. U. the population, and the rest of the world to the are in the base of the world.\nThe 2.5 of. the world to date.\n- the following U.S.\n- the firstity of the.\n-",
+        "metrics": {
+          "n_words": 83,
+          "distinct_4gram": 0.975,
+          "repetition_4gram": 0.025,
+          "avg_word_len": 3.2,
+          "punct_ratio": 0.069
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 3,
+        "text": " which the the time the the. the population, is, to the past and, is that the beginning of the the\n with to the the history of the U. in the first, which. of course that the of of the. Indeed, the and the first, of the the the city, led to the the world from the end of the end of the world by the people, the first to into the age of, the first is, and the end of the people and the that in the same world. In the U. This is, the years later, but the destruction of the power of the year, in the",
+        "metrics": {
+          "n_words": 108,
+          "distinct_4gram": 0.981,
+          "repetition_4gram": 0.019,
+          "avg_word_len": 3.41,
+          "punct_ratio": 0.038
+        },
+        "category": "coherent"
+      }
+    ],
+    "category_counts": {
+      "coherent": 4
+    }
+  },
+  {
+    "checkpoint": "final10k_old_best_s42",
+    "description": "FineWeb + lr=0.02",
+    "samples": [
+      {
+        "sample_idx": 0,
+        "text": ", including-American,, Germany, Germany, Germany, and,,,,,,, and the United\nAmerican,,, the, of the cities, South Africa, thes, the,,,,, Europe and Europe,\n America,, the United States,,. and, to,ies, and to the,, be and in the end of day.\nThe more was of, the\n- University of Columbia,, St. County,, California, California, Pennsylvania, Pennsylvania, and others,, and more.\nH. is E a vs.SThe State to\n-\n",
+        "metrics": {
+          "n_words": 64,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 4.45,
+          "punct_ratio": 0.128
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 1,
+        "text": " belongs to a one of the\n: the\n,..A. 1. 1.\nThe people from at the it, and is in the ground.\n- the 1.2. the community, a and the. Go to it. To be used to make it.\n... to\n is the 1. On the U.S.\n. at. 1.. of the U. of, however, it is the 2.\n... the. of.\n.... No. 1, No..\n- 1,, and., and, of the\n\n",
+        "metrics": {
+          "n_words": 67,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.52,
+          "punct_ratio": 0.16
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 2,
+        "text": ".\n\n\n-\n.\n- Other:\n- 1 1.\n- No. to.\n- 2\n....-.\n-.\n- 1:..\n..\n- 1- the..\n- 4 that the\n-\n- in the.\n- No.\n-\n-.\n- 1 to---.\n-.\n\n--\n\n\n------1.\n- J. King of.\n- No.\n\n\n---- from.\n- the with lots of the.\n-",
+        "metrics": {
+          "n_words": 28,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.32,
+          "punct_ratio": 0.156
+        },
+        "category": "garbage"
+      },
+      {
+        "sample_idx": 3,
+        "text": " a person and one of the.\n is, the, to or, and, is that of the, in the\n with and the a history of the,. in, the, and there are, that\ufffd of of the. Now, the and it is part of the, and the, and to the world of a,\ufffd of will, of the, by\n the, and of to the..,, the other is, and the side of the same States, the., the U.\ufffds.. It is, and years later, with the portion of the rest of the,,\ufffds",
+        "metrics": {
+          "n_words": 87,
+          "distinct_4gram": 0.988,
+          "repetition_4gram": 0.012,
+          "avg_word_len": 2.93,
+          "punct_ratio": 0.089
+        },
+        "category": "coherent"
+      }
+    ],
+    "category_counts": {
+      "coherent": 3,
+      "garbage": 1
+    }
+  },
+  {
+    "checkpoint": "opt10k_mousse_s42",
+    "description": "Mousse optimizer (5.329)",
+    "samples": [
+      {
+        "sample_idx": 0,
+        "text": ", for-the years, one, one, etc., to\n, and\n in in which the world\nIn the house, the, of the. the, etc.\n, to the,\n,,,, and for the. life, what the best it is and. and, to are other the- to the, is be done in the end of day.\nThe it was of, a\n- Lack of life, with Dr.\n life, health, phone, music, life, and access to the and society.\nH. is the a U.SThe alternative to\n-\n",
+        "metrics": {
+          "n_words": 77,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 3.17,
+          "punct_ratio": 0.096
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 1,
+        "text": " and to the house, of\n the the house,.\na. You can, and the a person from at, it, and is in the ground.\n- the people the v. the community, a and the. Go to it. They are going to make it.\ne.. to it is\n Mr. On the other hand. that the one at. the\u2019s the U. of, however, it is the U.\n... the, of.\n.... L. 1, p..\nIt is,, the example, the one of the\n\n",
+        "metrics": {
+          "n_words": 77,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.87,
+          "punct_ratio": 0.11
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 2,
+        "text": ".\n\n\n\n\n in all your the world\n-\nIt is a good place.\n and.\n\n\n....\n.\n...\nIn the a.. St.\n-. No:, p.\n- In the U.\n- Contact:.\nS. F..\n- W.,. to. U.S-\n-\n...\n\n. To of the. at.m.\nNo J.A.....C.\nS., S. etc.\nH the:.:..\ncan",
+        "metrics": {
+          "n_words": 42,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.19,
+          "punct_ratio": 0.249
+        },
+        "category": "garbage"
+      },
+      {
+        "sample_idx": 3,
+        "text": " a person and to of the. The is, the is to a house and, the all of the, in the\n with and in the all of the things. in,\n, and. of course that any of of the. Therefore, the and it is all of the, and the, and to the one he has,\ufffd of. All of the, by\n the, and of to the, thes, the\n is, and the, of the\ns, the., the U.\ufffds v. What is, the\ufffds, is the absence of the nature of the and,\ufffds",
+        "metrics": {
+          "n_words": 90,
+          "distinct_4gram": 0.989,
+          "repetition_4gram": 0.011,
+          "avg_word_len": 2.81,
+          "punct_ratio": 0.074
+        },
+        "category": "coherent"
+      }
+    ],
+    "category_counts": {
+      "coherent": 3,
+      "garbage": 1
+    }
+  },
+  {
+    "checkpoint": "best10k_adam_s42",
+    "description": "Adam baseline (5.732)",
+    "samples": [
+      {
+        "sample_idx": 0,
+        "text": ", for-out in the world, as the as to the to\n, and\n in in all the world\nIn the city, the part of the area, South Africa, and, to the, we were,,, and of that,,, and the city of the the. and, to the however, the to the it, the fact what the world was done.\n- It was of, the\n- All of course, with U. 1,, 18, 1997,000,000, and all the most of the and, and, in the a result.\nThe was to, the,",
+        "metrics": {
+          "n_words": 86,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 3.05,
+          "punct_ratio": 0.086
+        },
+        "category": "coherent"
+      },
+      {
+        "sample_idx": 1,
+        "text": " back to a mix of the\n:\n\n,.\n2. I can't.\n-, from a, it, and, in the ground.\n- the,.2. The name, a and the. Thanks to\n. You are going to make it.\n2.. to\n is, here.\ns to. J.\n.S.\n. The.: A. of, however, it is the U.\n...S. of.\n.s, 1,.A, 1990s,\n-y,,,,, and, of the\n\n",
+        "metrics": {
+          "n_words": 58,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.45,
+          "punct_ratio": 0.188
+        },
+        "category": "garbage"
+      },
+      {
+        "sample_idx": 2,
+        "text": ".\n\n\n.\n in all your the book\n-. is is a great part of the and.\n\n\n.... a.\n.. the\n- the a new of one.\n-. 1:\n..\n- In the case.\n- 1:.\n-. F. 1\n- is:, - to to U.S...\n....\n. I of the. at. 1.\n[ J.D. I the go to me.\ni. 1....\n- the:. of. I\n-",
+        "metrics": {
+          "n_words": 49,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 2.12,
+          "punct_ratio": 0.2
+        },
+        "category": "garbage"
+      },
+      {
+        "sample_idx": 3,
+        "text": " a woman and one of the.\n fact, it comes to a child and a certain that of the, of the there with a real different number of her,. in, the, and the are not that. of of the. However, the and it is one of the, and the, and to it. It has,\ufffd of will, of the, by both the, and of to the.. However, the other is, and the one of the others, the., the U.\ufffds No. It is, and years later, but the absence of the name of the and, in which",
+        "metrics": {
+          "n_words": 95,
+          "distinct_4gram": 1.0,
+          "repetition_4gram": 0.0,
+          "avg_word_len": 3.13,
+          "punct_ratio": 0.069
+        },
+        "category": "coherent"
+      }
+    ],
+    "category_counts": {
+      "coherent": 2,
+      "garbage": 2
+    }
+  }
+]

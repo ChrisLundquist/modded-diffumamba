@@ -1,5 +1,24 @@
 # DiffuMamba3 Training Recipe Handoff
 
+## Entry Points
+
+```bash
+# REPRO current best (quokka 31M, ~40 min)
+python train.py --config quokka --optimizer muon --muon_variant vs \
+  --muon_lr 0.01 --adam_lr 3e-4 --muon_out_proj \
+  --loss_weight minsnr --minsnr_gamma 1.5 \
+  --data_dir data/fineweb-edu-10B \
+  --batch_size 8 --max_steps 10000 --save_best --save_path ckpt.pt
+
+# REPRO best generative (10L×640d 111M, staged 10k/50k/100k)
+python train_large.py            # saves to checkpoints/10L640d_{phase}.pt
+
+# EVALUATE — gen-PPL under GPT-2 small + diagnostics
+python eval_gen_ppl.py           # our real north-star metric
+
+# DATA — see data/fineweb-edu-10B/README.md
+```
+
 ## Confidence Levels
 
 **HIGH confidence (validated at 5k/10k steps, 3 seeds, paired t-tests):**

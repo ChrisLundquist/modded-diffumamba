@@ -1,0 +1,157 @@
+"""5k-step architecture validation with checkpoints.
+
+Tests most promising architecture variants with 3 seeds.
+Trust DiffuMamba: hybrid attention may need longer training to show value.
+"""
+import sys
+import json
+import time
+from pathlib import Path
+from datetime import datetime
+
+RESULTS_DIR = Path(__file__).parent / "results"
+CKPT_DIR = Path(__file__).parent / "checkpoints"
+
+
+def run_one(name, argv_args):
+    import gc, torch
+    saved_argv = sys.argv
+    sys.argv = ["train.py"] + argv_args
+    t0 = time.perf_counter()
+    try:
+        from train import parse_args, train
+        args = parse_args()
+        val_loss = train(args)
+        elapsed = time.perf_counter() - t0
+        status = "OK"
+        error = ""
+    except Exception as e:
+        import traceback
+        elapsed = time.perf_counter() - t0
+        val_loss = float("inf")
+        status = "FAIL"
+        error = traceback.format_exc()
+    finally:
+        sys.argv = saved_argv
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    record = {
+        "name": name, "val_loss": val_loss, "elapsed_seconds": elapsed,
+        "status": status, "error": error,
+        "timestamp": datetime.now().isoformat(),
+    }
+    result_path = RESULTS_DIR / f"arch5k_{name}.json"
+    with open(result_path, "w") as f:
+        json.dump(record, f, indent=2)
+    print(f"  [{status}] {name}: val_loss={val_loss:.4f}, time={elapsed:.0f}s")
+    return record
+
+
+def main():
+    RESULTS_DIR.mkdir(exist_ok=True)
+    CKPT_DIR.mkdir(exist_ok=True)
+
+    common = [
+        "--config", "quokka", "--batch_size", "8",
+        "--max_steps", "5000", "--val_every", "250", "--log_every", "500",
+        "--warmup_steps", "200", "--lr_schedule", "cosine",
+        "--optimizer", "muon", "--muon_lr", "0.02", "--adam_lr", "3e-4",
+        "--loss_weight", "minsnr", "--minsnr_gamma", "1.5",
+        "--save_best",
+    ]
+
+    seeds = [42, 137, 2024]
+
+    conditions = {
+        # Control: current best (all Mamba, additive, no time cond)
+        "baseline": common + ["--no_time_cond"],
+        # DiffuMamba says hybrid helps — give it 5k steps to learn
+        "hybrid25": common + ["--no_time_cond", "--attn_layers", "0"],
+        # Gate merge with FIXED init (Bug 1 patched)
+        "gate_merge": common + ["--no_time_cond", "--merge", "gate"],
+        # DiffuMamba uses time conditioning
+        "time_cond": common,
+    }
+
+    results = []
+    total_t0 = time.perf_counter()
+    run_idx = 0
+    total_runs = len(conditions) * len(seeds)
+
+    for seed in seeds:
+        print(f"\n{'#'*60}")
+        print(f"# SEED {seed}")
+        print(f"{'#'*60}")
+        for config_name, base_args in conditions.items():
+            run_idx += 1
+            name = f"{config_name}_s{seed}"
+            ckpt = str(CKPT_DIR / f"{name}.pt")
+            args = base_args + ["--seed", str(seed), "--save_path", ckpt]
+            print(f"\n{'='*60}")
+            print(f"[{run_idx}/{total_runs}] {name}")
+            print(f"{'='*60}")
+            record = run_one(name, args)
+            record["seed"] = seed
+            record["config"] = config_name
+            results.append(record)
+
+    total_elapsed = time.perf_counter() - total_t0
+
+    import statistics
+
+    print(f"\n{'='*60}")
+    print(f"ARCHITECTURE 5K VALIDATION (total: {total_elapsed/60:.1f} min)")
+    print(f"{'='*60}")
+
+    configs = {}
+    for r in results:
+        c = r["config"]
+        if c not in configs:
+            configs[c] = []
+        configs[c].append(r["val_loss"])
+
+    print(f"\n  {'Config':<15s} {'Mean':>8s} {'Std':>8s}  Seeds")
+    print(f"  {'-'*15} {'-'*8} {'-'*8}  {'-'*30}")
+    for c in ["baseline", "hybrid25", "gate_merge", "time_cond"]:
+        vals = configs.get(c, [])
+        if len(vals) >= 2:
+            m = statistics.mean(vals)
+            s = statistics.stdev(vals)
+            vs_base = ""
+            if c != "baseline" and "baseline" in configs:
+                bm = statistics.mean(configs["baseline"])
+                delta = m - bm
+                vs_base = f"  vs baseline: {delta:+.4f}"
+            vals_str = ", ".join(f"{v:.4f}" for v in vals)
+            print(f"  {c:<15s} {m:>8.4f} {s:>8.4f}  [{vals_str}]{vs_base}")
+
+    # Paired analysis vs baseline
+    print(f"\n  Paired differences vs baseline:")
+    for c in ["hybrid25", "gate_merge", "time_cond"]:
+        deltas = []
+        for seed in seeds:
+            base_r = next((r for r in results if r["config"] == "baseline" and r["seed"] == seed), None)
+            test_r = next((r for r in results if r["config"] == c and r["seed"] == seed), None)
+            if base_r and test_r:
+                deltas.append(test_r["val_loss"] - base_r["val_loss"])
+        if len(deltas) >= 2:
+            m = statistics.mean(deltas)
+            s = statistics.stdev(deltas)
+            t_stat = m / (s / len(deltas)**0.5) if s > 0 else float('inf')
+            sig = "SIG" if abs(t_stat) > 2.92 else "n.s."
+            print(f"    {c:<15s}: {m:+.4f} ± {s:.4f} (t={t_stat:.2f}, {sig})")
+
+    # List checkpoints
+    ckpts = list(CKPT_DIR.glob("*.pt"))
+    print(f"\n  Checkpoints saved: {len(ckpts)} in {CKPT_DIR}/")
+
+    summary_path = RESULTS_DIR / "arch_5k_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults saved to {summary_path}")
+
+
+if __name__ == "__main__":
+    main()
