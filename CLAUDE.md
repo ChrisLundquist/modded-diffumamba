@@ -50,14 +50,18 @@ Current status: Mamba3 non-MIMO works. MIMO configs silently fall back to non-MI
 image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy.
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
-**tok_emb wants Muon too (refutes modded-nanogpt lore, 2026-04-18).** The geometric
-analysis (results/geometry/REPORT.md) found tok_emb is the ONLY matrix showing the
-classic Huh-2021 simplicity-bias signature under Adam (stable rank 0.014→0.009,
+**tok_emb in Muon wins at 5k, BUT causal story is confounded (2026-04-18).** The
+geometric analysis (results/geometry/REPORT.md) found tok_emb is the ONLY matrix
+showing classic Huh-2021 simplicity-bias decay under Adam (stable rank 0.014→0.009,
 sigma_max 56→77 over 10k→50k steps). Routing tok_emb + tied lm_head through Muon-VS
-(flag: --muon_tok_emb) saves -0.115 ± 0.011 nats at 5k (t=-18.94, 3 seeds paired),
-with same muon_lr=0.01 as blocks and no throughput hit. Contradicts the
-modded-nanogpt convention that "Muon should only be used for hidden weight layers."
-10k validation pending. Generation impact untested but plausible (see HANDOFF.md).
+(flag: --muon_tok_emb) saves -0.115 nats at 5k, all 3 paired seeds agreed.
+HOWEVER: the flag bundles (a) ~380x effective-LR jump on 19.3M embed params,
+(b) Newton-Schulz orthogonalization, (c) momentum/WD semantics change. Nvidia
+finding #9 showed raising Adam embed LR from 1.5e-4 to 1e-3 was worth 0.20 nats at
+30M scale — which is in the same ballpark. The "it's the geometry" claim is NOT
+established vs "Adam tok_emb at 3e-4 was undertrained." A 3-arm A/B/C
+{baseline, Adam_emb_lr=1e-3, Muon_emb} is required to disambiguate (see
+sweep_adam_emb_lr_ablation_5k.py). 10k and gen-quality both still pending.
 
 **Best generative model: 10L×640d @ 30k steps** (111.7M params, Mamba3 Triton non-MIMO)
 - **gen-PPL = 54.3** under GPT-2 small with top-k=50 (beats MDLM paper's 82 at 169M/1M steps)

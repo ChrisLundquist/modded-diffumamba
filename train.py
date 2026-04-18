@@ -511,7 +511,8 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
     if args.optimizer == "muon":
         block_muon_params = []
         emb_muon_params = []
-        adam_params = []
+        adam_emb_params = []
+        adam_other_params = []
 
         for name, p in model.named_parameters():
             if not p.requires_grad:
@@ -526,35 +527,52 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
                 and "conv1d" not in name
                 and (args.muon_out_proj or "out_proj" not in name)
             )
-            # Embedding Muon: opt-in via flags. lm_head rides on tok_emb via
-            # weight tying. pos_emb is a small extra matrix (max_seq_len x d_model).
-            is_emb = (
+            # Embedding routing: either to Muon (opt-in via muon_tok/pos_emb)
+            # or to a separate Adam group (opt-in via adam_emb_lr).
+            is_muon_emb = (
                 (args.muon_tok_emb and "tok_emb" in name and p.ndim >= 2)
                 or (args.muon_pos_emb and "pos_emb" in name and p.ndim >= 2)
             )
-            if is_emb:
+            # adam_emb_lr specifically targets tok_emb (the 50304 x d_model
+            # matrix that's the subject of the Muon-vs-Adam disambiguation).
+            # pos_emb stays in the main Adam group unless routed to Muon.
+            is_adam_emb_candidate = "tok_emb" in name and p.ndim >= 2
+
+            if is_muon_emb:
                 emb_muon_params.append(p)
             elif is_block:
                 block_muon_params.append(p)
+            elif is_adam_emb_candidate:
+                adam_emb_params.append(p)
             else:
-                adam_params.append(p)
+                adam_other_params.append(p)
 
-        # If user sets a distinct emb LR, split emb into its own group; else
-        # merge emb into the block group for simplicity.
+        # Muon emb group: split when user sets a distinct emb LR; else merge.
         emb_lr = args.muon_emb_lr if args.muon_emb_lr is not None else args.muon_lr
-        separate_emb_group = emb_muon_params and emb_lr != args.muon_lr
-        if not separate_emb_group:
+        separate_muon_emb = emb_muon_params and emb_lr != args.muon_lr
+        if not separate_muon_emb:
             block_muon_params = block_muon_params + emb_muon_params
             emb_muon_params = []
 
+        # Adam emb group: split when user sets a distinct Adam emb LR; else merge.
+        adam_emb_lr = args.adam_emb_lr if args.adam_emb_lr is not None else args.adam_lr
+        separate_adam_emb = adam_emb_params and adam_emb_lr != args.adam_lr
+        if not separate_adam_emb:
+            adam_other_params = adam_other_params + adam_emb_params
+            adam_emb_params = []
+
         total_muon = sum(p.numel() for p in block_muon_params + emb_muon_params)
+        total_adam = sum(p.numel() for p in adam_other_params + adam_emb_params)
         print(f"  Muon params: {total_muon/1e6:.1f}M "
               f"({len(block_muon_params) + len(emb_muon_params)} tensors)")
-        print(f"  Adam params: {sum(p.numel() for p in adam_params)/1e6:.1f}M "
-              f"({len(adam_params)} tensors)")
-        if separate_emb_group:
+        print(f"  Adam params: {total_adam/1e6:.1f}M "
+              f"({len(adam_other_params) + len(adam_emb_params)} tensors)")
+        if separate_muon_emb:
             print(f"  Embedding Muon group: {sum(p.numel() for p in emb_muon_params)/1e6:.1f}M "
                   f"({len(emb_muon_params)} tensors) at lr={emb_lr}")
+        if separate_adam_emb:
+            print(f"  Embedding Adam group: {sum(p.numel() for p in adam_emb_params)/1e6:.1f}M "
+                  f"({len(adam_emb_params)} tensors) at lr={adam_emb_lr}")
 
         param_groups = [
             dict(params=block_muon_params, use_muon=True,
@@ -562,7 +580,7 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
                  momentum=args.muon_momentum, weight_decay=args.muon_wd,
                  ns_steps=args.ns_steps, muon_variant=args.muon_variant),
         ]
-        if separate_emb_group:
+        if separate_muon_emb:
             param_groups.append(
                 dict(params=emb_muon_params, use_muon=True,
                      lr=emb_lr, base_lr=emb_lr,
@@ -570,10 +588,16 @@ def build_optimizer(model: DiffuMamba3, args) -> torch.optim.Optimizer:
                      ns_steps=args.ns_steps, muon_variant=args.muon_variant),
             )
         param_groups.append(
-            dict(params=adam_params, use_muon=False,
+            dict(params=adam_other_params, use_muon=False,
                  lr=args.adam_lr, base_lr=args.adam_lr,
                  betas=(0.9, args.adam_beta2), weight_decay=args.adam_wd),
         )
+        if separate_adam_emb:
+            param_groups.append(
+                dict(params=adam_emb_params, use_muon=False,
+                     lr=adam_emb_lr, base_lr=adam_emb_lr,
+                     betas=(0.9, args.adam_beta2), weight_decay=args.adam_wd),
+            )
         if args.muon_variant != "base":
             print(f"  Muon variant: {args.muon_variant}")
         return MuonAdamW(param_groups)
@@ -839,6 +863,12 @@ def parse_args():
                    help="LR for the Muon embedding group (tok_emb/pos_emb). "
                         "If unset or equal to --muon_lr, emb params share the block group. "
                         "If different, they get a separate param group with this LR.")
+    p.add_argument("--adam_emb_lr", type=float, default=None,
+                   help="LR for Adam-routed tok_emb only (pos_emb always stays in the "
+                        "main Adam group). No-op when --muon_tok_emb is set. If unset "
+                        "or equal to --adam_lr, tok_emb shares the main Adam group. "
+                        "Used by the adam_emb_lr-vs-muon A/B/C to disambiguate "
+                        "Muon-emb wins from Adam-undertrained-embed confounds.")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,
