@@ -1,11 +1,20 @@
 """MaskGIT-style iterative remasking sampler for prefix-conditional MDLM.
 
+KNOWN BUG (2026-04-18): this implementation re-samples ALL non-prefix positions
+every step, including ones that were committed in earlier steps. Chang 2022
+samples only at currently-masked positions and uses confidence-based remasking
+to revise commits. Empirical result with current impl: monotonically worse
+generation as n_steps increases (rep_4 0.37 → 0.53 across n_steps {12, 24, 48, 96}
+on PAPL@45k checkpoint), opposite of expected. TODO: rewrite to sample only
+masked positions; reuse old commits' confidence (under current logits) for
+remasking decisions.
+
 Difference from samplers/mdlm_topk:
   - mdlm_topk one-shot: each demask step *commits* tokens permanently.
     Once a position is unmasked it never changes. ~O(L/k) forwards.
-  - MaskGIT iterative: each step samples ALL masked positions, scores
-    confidence, then re-masks the lowest-confidence fraction. Allows the
-    model to revise earlier guesses, often improves coherence.
+  - MaskGIT iterative (correct version): sample at currently-MASKED
+    positions only; confidence-rank ALL non-prefix positions; remask the
+    lowest-confidence ones. Allows revising earlier commits via remasking.
 
 Schedule (cosine, Chang 2022): fraction of positions to KEEP at step t/T is
     keep(t) = 1 - cos(π/2 · t/T)

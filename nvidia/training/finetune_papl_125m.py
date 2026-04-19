@@ -29,9 +29,18 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'eval', 'gen_harness'))
 from transformer_v2 import TransformerV2  # noqa: E402
 from muon import Muon  # noqa: E402
 from data import TokenDataset  # noqa: E402
+from samplers.mdlm_topk import demask_topk_prefix  # noqa: E402
+from metrics.diversity import distinct_n  # noqa: E402
+from metrics.repetition import rep_n, top_word_share  # noqa: E402
+
+GENPROBE_PROMPTS_PATH = os.path.join(
+    os.path.dirname(__file__), '..', 'eval', 'gen_harness', 'prompts',
+    'fineweb_edu_held.pt'
+)
 
 torch.set_float32_matmul_precision('high')
 
@@ -94,6 +103,31 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
     return (per_sample * elbo_weight.squeeze(1)).mean()
 
 
+@torch.no_grad()
+def genprobe(model, prefix_ids, cont_len, prefix_len, top_k=50, n_steps=64,
+             batch_size=16, device='cuda'):
+    """Fast generation probe: rep_4, distinct_4, top10_share on a small prompt set.
+
+    Used during training to give live signal on the metrics that actually matter
+    for PAPL (which intentionally does not optimize standard val_loss).
+    """
+    model.eval()
+    N = prefix_ids.shape[0]
+    samples = []
+    for b in range(0, N, batch_size):
+        chunk = prefix_ids[b:b + batch_size].to(device)
+        out = demask_topk_prefix(model, chunk, cont_len, top_k=top_k,
+                                 temperature=1.0, n_steps=n_steps, device=device)
+        samples.append(out.cpu())
+    full = torch.cat(samples, dim=0)
+    completions = [row[prefix_len:].tolist() for row in full]
+    return {
+        'rep_4': rep_n(completions, 4),
+        'distinct_4': distinct_n(completions, 4),
+        'top10_share': top_word_share(completions, 10),
+    }
+
+
 def eval_mdlm_standard(model, val_x):
     """Standard Min-SNR ELBO eval (alpha=0 equivalent). Comparable to train_dmodern_125m's eval."""
     model.eval()
@@ -136,6 +170,11 @@ def main():
     ap.add_argument('--extra-steps', type=int, default=10000)
     ap.add_argument('--resume', type=str, default=RESUME_CKPT)
     ap.add_argument('--output-dir', type=str, default=OUTPUT_DIR)
+    ap.add_argument('--genprobe-every', type=int, default=0,
+                    help='Run a fast generation probe (rep_4, distinct_4) every N steps. '
+                         '0 disables. Recommended 1000 for resume runs.')
+    ap.add_argument('--genprobe-n-prompts', type=int, default=32,
+                    help='Number of held-out prompts for the live gen probe.')
     args = ap.parse_args()
 
     device = 'cuda'
@@ -187,6 +226,19 @@ def main():
     vloss0 = eval_mdlm_standard(model, val_x)
     print(f'Re-verified baseline val (std Min-SNR): {vloss0:.4f}  (ckpt reported {baseline_val})')
 
+    # Load gen probe prompts if requested
+    probe_prefix = None
+    if args.genprobe_every > 0:
+        prompts = torch.load(GENPROBE_PROMPTS_PATH, weights_only=False)
+        probe_prefix = prompts['prefix_ids'][:args.genprobe_n_prompts]
+        probe_cont_len = int(prompts['cont_len'])
+        probe_prefix_len = int(prompts['prefix_len'])
+        m0 = genprobe(model, probe_prefix, probe_cont_len, probe_prefix_len,
+                      device=device)
+        print(f'Genprobe baseline (n={args.genprobe_n_prompts}): '
+              f'rep_4={m0["rep_4"]:.4f} distinct_4={m0["distinct_4"]:.4f} '
+              f'top10={m0["top10_share"]:.4f}')
+
     print(f'\nPAPL fine-tune: alpha={args.alpha}, tau={args.tau}')
     print(f'Steps {start_step} → {start_step + args.extra_steps} (constant LR)')
 
@@ -228,9 +280,15 @@ def main():
             tps = (local_step + 1) * tokens_per_step / elapsed if elapsed > 0 else 0
             if vloss < best_val:
                 best_val = vloss
+            extra = ''
+            if args.genprobe_every > 0 and probe_prefix is not None and \
+               (local_step + 1) % args.genprobe_every == 0:
+                m = genprobe(model, probe_prefix, probe_cont_len, probe_prefix_len,
+                             device=device)
+                extra = f' | rep4={m["rep_4"]:.3f} dist4={m["distinct_4"]:.3f} top10={m["top10_share"]:.3f}'
             print(f'  step {step:6d} (+{local_step+1:5d}) | train {total_loss:.4f} | '
                   f'val(std) {vloss:.4f} | best {best_val:.4f} | '
-                  f'{tps/1e3:.0f}K tok/s | {elapsed:.0f}s', flush=True)
+                  f'{tps/1e3:.0f}K tok/s | {elapsed:.0f}s{extra}', flush=True)
 
         if (local_step + 1) % CHECKPOINT_EVERY == 0 or local_step == args.extra_steps - 1:
             ckpt_path = os.path.join(args.output_dir, f'checkpoint_{step+1}.pt')

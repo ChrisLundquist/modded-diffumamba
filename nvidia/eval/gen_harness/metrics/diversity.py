@@ -52,14 +52,14 @@ def self_bleu_4(completion_list, max_refs=20, seed=1729):
         if not refs:
             continue
         precisions = []
-        for n in (1, 2, 3, 4):
-            hyp_grams = Counter(_ngrams(hyp, n))
+        for ngram_n in (1, 2, 3, 4):
+            hyp_grams = Counter(_ngrams(hyp, ngram_n))
             if not hyp_grams:
                 precisions.append(0.0)
                 continue
             ref_grams = Counter()
             for r in refs:
-                ref_grams |= Counter(_ngrams(r, n))
+                ref_grams |= Counter(_ngrams(r, ngram_n))
             overlap = sum(min(c, ref_grams.get(g, 0)) for g, c in hyp_grams.items())
             total = sum(hyp_grams.values())
             precisions.append(overlap / total if total else 0.0)
