@@ -60,6 +60,38 @@ MODEL_SPECS = {
         kwargs=dict(vocab_size=50258, n_layer=12, n_head=12, n_embd=768,
                     use_rope=True, use_swiglu=True, use_qk_norm=True),
     ),
+    # 30M scratch baselines (existing in transformer_converge_v3, no retrain)
+    'd_modern_30m_5k': dict(    # vanilla scratch @ 5k — direct comparator for PAPL scratch sweep
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/transformer_converge_v3/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    # 30M PAPL τ-sweep, scratch-trained 5k steps with varying tau (single seed=42)
+    'd_modern_30m_papl_scratch_tau1': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_papl_scratch_tau1/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_papl_scratch_tau03': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_papl_scratch_tau03/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_papl_scratch_tau01': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_papl_scratch_tau01/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_papl_scratch_tau003': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_papl_scratch_tau003/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
     'd_modern_125m_30k': dict(   # vanilla MDLM at step 30k — generation peak (NLL min)
         family='transformer_v2',
         ckpt='muon_exp/outputs/125m_10b_dmodern/checkpoint_30000.pt',
