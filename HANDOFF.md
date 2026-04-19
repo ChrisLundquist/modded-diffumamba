@@ -27,20 +27,24 @@ python eval_gen_ppl.py           # our real north-star metric
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
-- **tok_emb in Muon routing: mechanism partially disambiguated (2026-04-19).**
-  3-arm paired 5k sweep (sweep_adam_emb_1e3_3seeds.py) at quokka:
+- **tok_emb in Muon routing: mechanism under active disambiguation (2026-04-19).**
+  Initial 3-arm paired 5k sweep (sweep_adam_emb_1e3_3seeds.py) at quokka:
     A: Adam tok_emb @ 3e-4 -> 5.307
-    B: Adam tok_emb @ 1e-3 -> 5.127 (-0.179 vs A, t=-27) -- REPLICATES nvidia
-       finding #9 on Mamba, so that effect is NOT transformer-specific
-    C: Muon tok_emb @ 0.10 -> 5.030 (-0.097 vs B, t=-10; -0.276 vs A, t=-17)
-  Interpretation: ~65% of the Muon-vs-Adam@3e-4 win is an LR story (Adam@1e-3
-  captures it). ~35% is residual geometry/orthogonalization signal that Adam
-  at the nvidia-tuned LR cannot reproduce. CLI: `--muon_tok_emb` + `--muon_emb_lr 0.10`.
-  Also winning emb_lr curve: monotonic through 0.003->0.10 (see exp3 + exp-e;
-  emblr0p1 mean=5.030). Caveats still open: (a) Adam@3e-3/1e-2 untested -- an
-  even higher Adam LR might close more of the residual; (b) 10k validation; (c)
-  does the 0.097-nat residual persist at 125M/1B+ (scaling sweep still queued);
-  (d) does ELBO->gen transfer (see Caveat 2 below, nvidia is studying this).
+    B: Adam tok_emb @ 1e-3 -> 5.127 (3/3 seeds agree) -- REPLICATES nvidia
+       finding #9 on Mamba, so the Adam-embed-LR effect is NOT transformer-specific
+    C: Muon tok_emb @ 0.10 -> 5.030 (3/3 seeds agree; -0.276 vs A, -0.097 vs B)
+  First-pass read: ~65% LR / ~35% residual geometry.
+  UPDATE (adamhi sweep in-flight, 4 of 6 runs done at time of writing):
+    - Adam@3e-3 mean 5.067 (3/3 seeds agree)
+    - Adam@1e-2 mean 5.055 (2/3 seeds; s42=5.067, s137=5.044)
+  At 2 seeds, Adam@1e-2 vs Muon@0.10 paired delta is +0.006 / +0.007 —
+  essentially tied. If s2024 confirms, the residual-geometry fraction
+  collapses from ~35% toward ~0-10%, and the full Muon-tok_emb win becomes
+  "just an embedding-LR story, solvable with --adam_emb_lr 1e-2."
+  CLI for the Muon recipe: `--muon_tok_emb --muon_emb_lr 0.10` (current best
+  empirically). CLI for the Adam-only alternative: `--adam_emb_lr 1e-2`.
+  Other open items: 10k validation, scaling sweep with adam_tuned arm,
+  ELBO->gen transfer (see Caveat 2, nvidia is studying this).
 - All-Mamba beats hybrid Mamba-attention (+0.06, t=3.7) at 31.5M scale
 - Additive merge beats gated merge (+0.24, t=7.5)
 - lr=0.01 beats lr=0.02 for Muon-VS (LR monotonically worse as it increases)
@@ -132,13 +136,16 @@ Improvement stack from Adam baseline (10k, 3 seeds):
 | + FineWeb-Edu + lr=0.01 | -0.197 | **5.069** |
 | **10k total vs Adam** | **-0.642** | **5.069** |
 | + tok_emb in Muon routing (5k only) | -0.115* | **~5.19 @ 5k** |
+| ++ muon_emb_lr 0.10 (5k only) | -0.160 | **~5.03 @ 5k** |
+| Adam-only alternative: --adam_emb_lr 1e-2 (5k) | ~-0.28 | **~5.05 @ 5k** (preliminary) |
 
-*Measured at 5k: baseline 5.307 → +tok_emb 5.192, 3/3 paired seeds agreed
-(deltas -0.1032, -0.1236, -0.1176). Note: with n=3 / df=2 the reported
-"t=-18.94" is misleading precision; treat as "direction consistent across
-all 3 seeds with tight spread," not a literal p-value. Expected 10k
-val_loss if gain scales linearly: ~4.95 — but 10k validation not yet run
-AND the Adam-embed-LR confound is not yet controlled (see caveats below).
+*Measured at 5k on quokka; 3/3 paired seeds agreed in direction (deltas
+-0.103, -0.124, -0.118). With n=3 / df=2 any specific t-value is
+misleading precision; treat as "direction consistent across seeds."
+Adam-only `--adam_emb_lr 1e-2` (2 of 3 seeds, preliminary) lands within
+~0.02 nats of Muon@0.10 — if s2024 confirms, the Muon-geometry part of
+this win is ~0 and the whole effect reduces to "embedding wants a higher
+effective per-group LR." 10k validation still pending for any of these.
 
 out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
 Higher new_best variance (std 0.08 vs old 0.02) — seed 42 was lucky at 4.976;

@@ -124,33 +124,44 @@ def main():
                     "--d_model", "640",   "--batch_size", "4"],
     }
 
-    # Per-scale emb_lr for the Muon arm. At 10L x 640d, clamp to <=0.05 to avoid
-    # wasting 30-40 min per run on likely-NaN divergence (web-agent analysis:
-    # Moonlight calibrates per-element Muon updates to ~1e-3-1e-4 at scale;
-    # emb_lr >= 0.07 at the tok_emb matrix's aspect ratio is in the divergence zone).
+    # Per-scale emb_lr caps for the large scales (NaN safety). At 10L x 640d,
+    # clamp Muon emb_lr to <=0.05. Adam embed lr=1e-2 on a wider tok_emb may
+    # also need care if it diverges, but nvidia's GLOBAL Adam@1e-2 divergence
+    # is attention/MLP, not the embedding group; keep the Adam-tuned emb_lr
+    # at 1e-2 unless we observe blowup (the run_one NaN guard catches it).
     MAX_LR_FOR_LARGE_SCALES = 0.05
     per_scale_muon_lr = {}
+    per_scale_adam_emb_lr = {}  # for the adam_tuned arm
     for s in scales:
         lr = winning_muon_lr
         if s in ("10L640d",) and lr > MAX_LR_FOR_LARGE_SCALES:
             print(f"  Clamping {s} muon_emb_lr {lr} -> {MAX_LR_FOR_LARGE_SCALES} (NaN safety)")
             lr = MAX_LR_FOR_LARGE_SCALES
         per_scale_muon_lr[s] = lr
+        per_scale_adam_emb_lr[s] = 1e-2  # from our own A sweep: tok_emb-only @ 1e-2 ties Muon@0.10
 
     seeds = [42, 137, 2024]
     results = []
     total_t0 = time.perf_counter()
     run_idx = 0
-    total_runs = len(scales) * len(arms) * len(seeds)
+    # arms are built per-scale inside the loop; arm count is constant = 3
+    # (adam_baseline, adam_tuned, muon_tok_emb).
+    total_runs = len(scales) * 3 * len(seeds)
 
-    # Order: for each scale, interleave arms per seed (paired).
+    # Order: for each scale, interleave arms per seed (paired). Three arms per
+    # scale so the Muon-tok_emb advantage can be separated from "Adam is
+    # undertuned at every scale" (adam_tuned uses --adam_emb_lr 1e-2 which our
+    # A sweep showed ties Muon@0.10 at quokka).
     for scale_name, scale_args in scales.items():
         muon_lr_here = per_scale_muon_lr[scale_name]
+        adam_emb_lr_here = per_scale_adam_emb_lr[scale_name]
         arms = {
             "adam_baseline": [],
+            "adam_tuned":    ["--adam_emb_lr", str(adam_emb_lr_here)],
             "muon_tok_emb":  ["--muon_tok_emb", "--muon_emb_lr", str(muon_lr_here)],
         }
-        print(f"\n{'='*60}\n# SCALE: {scale_name} (muon arm emb_lr={muon_lr_here})\n{'='*60}")
+        print(f"\n{'='*60}\n# SCALE: {scale_name} "
+              f"(muon emb_lr={muon_lr_here}, adam_tuned emb_lr={adam_emb_lr_here})\n{'='*60}")
         for seed in seeds:
             print(f"\n  -- seed {seed} --")
             for arm_name, arm_args in arms.items():
@@ -162,7 +173,12 @@ def main():
                 record["scale"] = scale_name
                 record["arm"] = arm_name
                 record["seed"] = seed
-                record["muon_emb_lr"] = muon_lr_here if arm_name == "muon_tok_emb" else None
+                if arm_name == "muon_tok_emb":
+                    record["emb_lr"] = muon_lr_here
+                elif arm_name == "adam_tuned":
+                    record["emb_lr"] = adam_emb_lr_here
+                else:
+                    record["emb_lr"] = None
                 results.append(record)
 
     total_elapsed = time.perf_counter() - total_t0
@@ -179,7 +195,7 @@ def main():
         for r in results:
             if r["scale"] == scale_name:
                 by_arm[r["arm"]].append((r["seed"], r["val_loss"]))
-        for arm in ["adam_baseline", "muon_tok_emb"]:
+        for arm in ["adam_baseline", "adam_tuned", "muon_tok_emb"]:
             entries = by_arm.get(arm, [])
             vals = [v for _, v in entries]
             if len(vals) >= 2:
@@ -187,20 +203,28 @@ def main():
                 s = statistics.stdev(vals)
                 vs = ", ".join(f"{v:.4f}" for v in vals)
                 print(f"    {arm:<18s} mean={m:.4f} std={s:.4f}  [{vs}]")
-        # Paired delta
-        deltas = []
-        for seed in seeds:
-            a = [v for s, v in by_arm["adam_baseline"] if s == seed]
-            m = [v for s, v in by_arm["muon_tok_emb"] if s == seed]
-            if a and m:
-                deltas.append(m[0] - a[0])
-        if len(deltas) >= 2:
-            md = statistics.mean(deltas)
-            sd = statistics.stdev(deltas)
-            n = len(deltas)
-            t_stat = md / (sd / (n ** 0.5)) if sd > 0 else float("inf")
-            sig = "**SIG**" if abs(t_stat) > 2.92 else ""
-            print(f"    Paired delta (muon - adam): {md:+.4f} ± {sd:.4f}  t={t_stat:+.2f}  n={n}  {sig}")
+
+        def paired(lhs_arm, rhs_arm, tag):
+            deltas = []
+            for seed in seeds:
+                a = [v for s, v in by_arm[rhs_arm] if s == seed]
+                b = [v for s, v in by_arm[lhs_arm] if s == seed]
+                if a and b:
+                    deltas.append(b[0] - a[0])
+            if len(deltas) >= 2:
+                md = statistics.mean(deltas)
+                sd = statistics.stdev(deltas)
+                n = len(deltas)
+                t_stat = md / (sd / (n ** 0.5)) if sd > 0 else float("inf")
+                # df=2 p=0.05 two-sided = 4.303; we report direction consistency
+                # rather than literal p-value.
+                dir_note = ("3/3 agree" if n == 3 and all((d < 0) == (md < 0) for d in deltas)
+                            else f"{n} seeds")
+                print(f"    {tag}: {md:+.4f} ± {sd:.4f}  t={t_stat:+.2f}  ({dir_note})")
+
+        paired("muon_tok_emb", "adam_baseline", "muon - adam_baseline (original claim)")
+        paired("adam_tuned",   "adam_baseline", "adam_tuned - adam_baseline (LR story, nvidia #9)")
+        paired("muon_tok_emb", "adam_tuned",    "muon - adam_tuned (residual geometry @ scale)")
 
     summary_path = RESULTS_DIR / "scaling_sweep_summary.json"
     with open(summary_path, "w") as f:
