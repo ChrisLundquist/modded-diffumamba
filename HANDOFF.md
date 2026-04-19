@@ -27,6 +27,39 @@ python eval_gen_ppl.py           # our real north-star metric
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
+- **Mamba-MDLM does NOT suffer from transformer-MDLM's repetition
+  degeneracy (2026-04-19, surprise).** Our C sweep (sweep_papl_train_3seeds.py)
+  ran PAPL-training vs baseline on Mamba3 quokka from scratch, 5k steps, 3
+  paired seeds. Per-run final rep_4 on n=16 gen-probe samples × 128 tokens
+  × 128 denoising steps, top_k=50:
+    baseline: rep_4 = [0.001, 0.003, 0.003]  (mean 0.0023)
+    PAPL:     rep_4 = [0.001, 0.003, 0.004]  (mean 0.0027, NULL vs baseline)
+  Compare to the nvidia transformer agent's vanilla 30M transformer MDLM
+  at rep_4 = 0.180 (n=64 samples). **Our Mamba-MDLM sits at a rep_4 floor
+  ~60x lower than transformer-MDLM**, on a similar parameter budget and
+  the same MDLM objective. PAPL was designed specifically for the
+  transformer-MDLM rep problem and has no room to help on our stack
+  because the problem doesn't exist here. The val-loss impact of PAPL was
+  also null on Mamba (mean delta +0.003, t=0.25, n=3). papl_gap stayed
+  ~0 throughout training at tau=0.1, meaning the planner-softmax over
+  masked positions is nearly uniform on Mamba — the planner concentration
+  PAPL relies on isn't developing.
+
+  Hypothesis: Mamba's SSM dynamics produce more diverse predicted
+  distributions at generation time than attention's winner-take-all logit
+  patterns, so the argmax-unmasking sampler naturally avoids ruts that
+  transformer MDLM falls into. Not a metric we can test directly at
+  quokka scale — attention comparison would need matched architecture at
+  matched scale. But the gap is large enough that the ELBO-vs-gen
+  decoupling nvidia observes on transformers might be substantially
+  weaker on Mamba.
+
+  **Caveat:** our n=16-per-val probe is below the noise floor needed to
+  resolve rep_4 differences at the 0.003 level. Nvidia phase-2 uses
+  n=500 prompts. We'll rerun with --gen_probe_final at n=128 at the
+  end of each future sweep to get cleaner numbers; but the 60x gap
+  vs nvidia's 0.180 is unlikely to be sample-noise.
+
 - **tok_emb in Muon: mechanism is LR story (2026-04-19, DEFINITIVE at quokka).**
   Full Adam-embed-LR ladder at quokka, 5k, 3 paired seeds (adamhi + earlier):
     Adam @ 3e-4  -> 5.307  (default, undertrained)

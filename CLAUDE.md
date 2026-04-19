@@ -50,6 +50,20 @@ Current status: Mamba3 non-MIMO works. MIMO configs silently fall back to non-MI
 image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy.
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
+**Mamba-MDLM does not have the transformer-MDLM rep problem (2026-04-19).**
+Baseline rep_4 on Mamba3 quokka at 5k steps sits at 0.001-0.005 on small
+gen probes, compared to the nvidia agent's 0.180 on vanilla 30M transformer
+MDLM — ~60x lower. PAPL (Peng 2025) was designed specifically for the
+transformer rep problem; our C sweep (sweep_papl_train_3seeds.py) confirmed
+PAPL is NULL on Mamba both in val (+0.003 nats, t=0.25) and in rep_4
+(baseline ≈ PAPL within noise). papl_gap stayed ~0 throughout training at
+tau=0.1, meaning the planner concentration PAPL relies on is not developing
+on Mamba. Hypothesis: SSM dynamics produce more diverse predicted
+distributions at generation time than attention's winner-take-all logit
+peaks. Bigger implication: if Mamba-MDLM's ELBO-vs-gen decoupling is
+smaller than transformer-MDLM's, our val_loss-based sweeps are more
+informative about real gen quality than nvidia's on their transformer.
+
 **tok_emb in Muon: mechanism partially disambiguated (2026-04-19).** 3-arm
 paired 5k sweep on quokka (sweep_adam_emb_1e3_3seeds.py):
   A Adam@3e-4 = 5.307 | B Adam@1e-3 = 5.127 (-0.179, t=-27) | C Muon@0.10 = 5.030 (-0.276 vs A, -0.097 vs B)
