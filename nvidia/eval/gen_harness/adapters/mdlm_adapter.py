@@ -107,6 +107,25 @@ MODEL_SPECS = {
         kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
                     use_rope=True, use_swiglu=True),
     ),
+    # Phase-2: 3 conditions × seed=43 for variance estimate
+    'd_modern_30m_vanilla_scratch_s43': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_vanilla_scratch_s43/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_papl_scratch_tau03_s43': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_papl_scratch_tau03_s43/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_invpapl_scratch_tau03_s43': dict(
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_invpapl_scratch_tau03_s43/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
     'd_modern_125m_30k': dict(   # vanilla MDLM at step 30k — generation peak (NLL min)
         family='transformer_v2',
         ckpt='muon_exp/outputs/125m_10b_dmodern/checkpoint_30000.pt',
