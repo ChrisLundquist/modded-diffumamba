@@ -27,38 +27,44 @@ python eval_gen_ppl.py           # our real north-star metric
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
-- **Mamba-MDLM does NOT suffer from transformer-MDLM's repetition
-  degeneracy (2026-04-19, surprise).** Our C sweep (sweep_papl_train_3seeds.py)
-  ran PAPL-training vs baseline on Mamba3 quokka from scratch, 5k steps, 3
-  paired seeds. Per-run final rep_4 on n=16 gen-probe samples × 128 tokens
-  × 128 denoising steps, top_k=50:
-    baseline: rep_4 = [0.001, 0.003, 0.003]  (mean 0.0023)
-    PAPL:     rep_4 = [0.001, 0.003, 0.004]  (mean 0.0027, NULL vs baseline)
-  Compare to the nvidia transformer agent's vanilla 30M transformer MDLM
-  at rep_4 = 0.180 (n=64 samples). **Our Mamba-MDLM sits at a rep_4 floor
-  ~60x lower than transformer-MDLM**, on a similar parameter budget and
-  the same MDLM objective. PAPL was designed specifically for the
-  transformer-MDLM rep problem and has no room to help on our stack
-  because the problem doesn't exist here. The val-loss impact of PAPL was
-  also null on Mamba (mean delta +0.003, t=0.25, n=3). papl_gap stayed
-  ~0 throughout training at tau=0.1, meaning the planner-softmax over
-  masked positions is nearly uniform on Mamba — the planner concentration
-  PAPL relies on isn't developing.
+- **Mamba-MDLM does NOT suffer from transformer-MDLM's population-level
+  repetition degeneracy (2026-04-19, confirmed at n=128).** Original
+  observation from C sweep (sweep_papl_train_3seeds.py, n=16 probes):
+  Mamba baseline rep_4 ≈ 0.002 on quokka 5k. Validated post-hoc on E's
+  10k-best checkpoint with n=128 samples × 128 tokens × 128 denoising
+  steps, top_k=50:
+    rep_4       = 0.0047
+    rep_8       = 0.0000
+    distinct_4  = 0.995
+    gen_PPL     = 73.1 (under GPT-2 small; text-like, not random garbage)
+    unigram_H   = 5.61 (natural English ~6.5)
+  Compare to nvidia's vanilla 30M transformer MDLM: rep_4 = 0.180.
+  **Our Mamba-MDLM is ~38x less repetitive at matched MDLM objective**,
+  and the generated text is demonstrably real language (GPT-2 PPL
+  solidly in the MDLM-paper 82 / LLaDA-1B 60-80 range).
+  PAPL was designed specifically for the transformer rep problem and
+  has no room to help on our stack. Val impact of PAPL was null on
+  Mamba (mean delta +0.003, t=0.25, n=3). papl_gap stayed ~0 throughout
+  training, meaning the planner-softmax over masked positions is
+  nearly uniform on Mamba — the planner concentration PAPL relies on
+  isn't developing.
 
   Hypothesis: Mamba's SSM dynamics produce more diverse predicted
-  distributions at generation time than attention's winner-take-all logit
-  patterns, so the argmax-unmasking sampler naturally avoids ruts that
-  transformer MDLM falls into. Not a metric we can test directly at
-  quokka scale — attention comparison would need matched architecture at
-  matched scale. But the gap is large enough that the ELBO-vs-gen
-  decoupling nvidia observes on transformers might be substantially
-  weaker on Mamba.
+  distributions at generation time than attention's winner-take-all
+  logit patterns, so the argmax-unmasking sampler naturally avoids
+  ruts that transformer MDLM falls into.
 
-  **Caveat:** our n=16-per-val probe is below the noise floor needed to
-  resolve rep_4 differences at the 0.003 level. Nvidia phase-2 uses
-  n=500 prompts. We'll rerun with --gen_probe_final at n=128 at the
-  end of each future sweep to get cleaner numbers; but the 60x gap
-  vs nvidia's 0.180 is unlikely to be sample-noise.
+  **Important caveats:**
+  - The low rep_4 does NOT mean generation quality is great. PPL = 73
+    is worse than nvidia's 125M transformer would manage (theirs sits
+    ~54 via our 10L640d earlier). Mamba avoids population-level
+    stuckness but still has per-sample degenerate runs (sample
+    inspection found repeated "course course course" and "king king
+    king" in some generations). The fair claim is about the SPECIFIC
+    failure mode PAPL targets (population-level stopword/stuckness
+    grooves), not about overall generation quality.
+  - gen_PPL comparison to nvidia's transformer numbers requires
+    matched sampling setups (they use prompted, we use unprompted).
 
 - **tok_emb in Muon: mechanism is LR story (2026-04-19, DEFINITIVE at quokka).**
   Full Adam-embed-LR ladder at quokka, 5k, 3 paired seeds (adamhi + earlier):
@@ -175,7 +181,24 @@ Improvement stack from Adam baseline (10k, 3 seeds):
 Measured at 5k on quokka; 3/3 paired seeds agreed. The Adam@1e-2 and
 Muon@0.10 rows are statistically indistinguishable (mean Δ = 0.006 nats,
 6x smaller than seed variance). Both are equivalent practical choices.
-10k validation still pending; ELBO->gen quality untested on this stack.
+
+**10k validation (E, 2026-04-19):** Muon@0.10 recipe at 10k best val
+= **4.859** at step 8500 (val slightly regresses to 4.925 by step 10k).
+Full progression: 5.03 @ 5k → 4.86 @ 8.5k → 4.92 @ 10k. So the 5k gains
+extend in training horizon by another ~−0.17 nats to 8.5k before
+modestly regressing.
+
+**BUT: gen_PPL under GPT-2 regresses with new recipe.** E (new recipe,
+10k best val=4.86) has gen_PPL = **73.1**. Old `quokka_old_best` at 10k
+with `--muon_out_proj` only (val=5.07) had gen_PPL = 68.3 per our
+existing records. So the new recipe that wins 0.21 nats on val_loss
+LOSES ~5 PPL points on generation quality. Consistent with nvidia's
+ELBO-vs-gen decoupling observation, just milder on Mamba than theirs.
+
+**Practical takeaway:** if optimizing for val_loss, use
+`--adam_emb_lr 1e-2` (or equivalent Muon recipe). If optimizing for
+generation quality, stick with the pre-tok_emb recipe (just
+`--muon_out_proj`). No free lunch.
 
 out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
 Higher new_best variance (std 0.08 vs old 0.02) — seed 42 was lucky at 4.976;
