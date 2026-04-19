@@ -128,20 +128,35 @@ def genprobe(model, prefix_ids, cont_len, prefix_len, top_k=50, n_steps=64,
     }
 
 
-def eval_mdlm_standard(model, val_x):
-    """Standard Min-SNR ELBO eval (alpha=0 equivalent). Comparable to train_dmodern_125m's eval."""
+def eval_mdlm_decomp(model, val_x, alpha=1.0, tau=1.0):
+    """Decomposed val eval: uniform-MDLM-NLL and PAPL-planner-weighted-NLL.
+
+    Both terms share the same masking, t-sampling, and logits (one forward
+    per batch) so they're directly comparable. Min-SNR γ=1.5 clamp applied
+    to both. The two numbers are the diagnostic the Peng paper cares about:
+
+      - uniform: standard MDLM ELBO. Drops slowly (or even rises slightly)
+        under PAPL by construction — PAPL deallocates capacity from
+        positions the planner rarely visits. Slow movement is expected.
+      - planner_w: PAPL's own training objective on val. Should drop
+        meaningfully under PAPL — that's what successful sampler-aware
+        training looks like in the loss space.
+
+    Reviewer's framing: a decrease in planner_w alongside a small increase
+    in uniform is the predicted signature of successful PAPL training.
+    """
     model.eval()
     device = val_x.device
     n_val = val_x.shape[0]
-    total_loss = 0.0
+    uniform_total = 0.0
+    planner_total = 0.0
     n_points = 0
     k = 5.0
-    eval_rng = torch.Generator(device=device)
-    eval_rng.manual_seed(0)
+    eval_rng = torch.Generator(device=device); eval_rng.manual_seed(0)
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         for t_val in torch.linspace(0.05, 0.95, 20):
             t_batch = torch.full((min(MICRO_BATCH, n_val), 1), t_val.item(), device=device)
-            batch_losses = []
+            uniform_b, planner_b = [], []
             for i in range(0, n_val, MICRO_BATCH):
                 vx = val_x[i:i + MICRO_BATCH]
                 bs = vx.shape[0]
@@ -154,13 +169,35 @@ def eval_mdlm_standard(model, val_x):
                 per_token_loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)), vx.reshape(-1), reduction='none'
                 ).reshape(bs, -1)
-                elbo_weight = (k * torch.exp(-k * t) / (1.0 - torch.exp(-k * t))).clamp(max=MIN_SNR_GAMMA)
-                mask_float = mask.float()
-                per_sample = (per_token_loss * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
-                batch_losses.append((per_sample * elbo_weight.squeeze(1)).mean().item())
-            total_loss += sum(batch_losses) / len(batch_losses)
+                ew = (k * torch.exp(-k * t) / (1.0 - torch.exp(-k * t))).clamp(max=MIN_SNR_GAMMA)
+                mf = mask.float()
+
+                # Uniform (vanilla MDLM)
+                u_per_sample = (per_token_loss * mf).sum(dim=1) / mf.sum(dim=1).clamp(min=1.0)
+                uniform_b.append((u_per_sample * ew.squeeze(1)).mean().item())
+
+                # Planner-weighted (PAPL): same gt-logprob planner used at train
+                logprobs = F.log_softmax(logits, dim=-1)
+                gt_lp = logprobs.gather(-1, vx.unsqueeze(-1)).squeeze(-1)
+                scores = (gt_lp / tau).masked_fill(~mask, -1e4)
+                w = F.softmax(scores, dim=1) * mf
+                papl_w = 1.0 + alpha * w
+                p_per_sample = (per_token_loss * mf * papl_w).sum(dim=1) / mf.sum(dim=1).clamp(min=1.0)
+                planner_b.append((p_per_sample * ew.squeeze(1)).mean().item())
+
+            uniform_total += sum(uniform_b) / len(uniform_b)
+            planner_total += sum(planner_b) / len(planner_b)
             n_points += 1
-    return total_loss / n_points
+    return {
+        'uniform_nll_minsnr': uniform_total / n_points,
+        'planner_w_nll_minsnr': planner_total / n_points,
+    }
+
+
+def eval_mdlm_standard(model, val_x):
+    """Backwards-compatible single-number eval (uniform-only). Used for callers
+    that don't need the decomposition. Prefer eval_mdlm_decomp for new code."""
+    return eval_mdlm_decomp(model, val_x, alpha=0.0)['uniform_nll_minsnr']
 
 
 def main():
@@ -222,9 +259,12 @@ def main():
                         generator=g)
     data_iter = iter(loader)
 
-    # Re-verify baseline val (should be close to ckpt val_loss)
-    vloss0 = eval_mdlm_standard(model, val_x)
-    print(f'Re-verified baseline val (std Min-SNR): {vloss0:.4f}  (ckpt reported {baseline_val})')
+    # Baseline val with both terms (uniform + planner-weighted)
+    decomp0 = eval_mdlm_decomp(model, val_x, alpha=args.alpha, tau=args.tau)
+    vloss0 = decomp0['uniform_nll_minsnr']
+    vloss0_papl = decomp0['planner_w_nll_minsnr']
+    print(f'Baseline val: uniform {vloss0:.4f} | papl_w {vloss0_papl:.4f}  '
+          f'(ckpt reported {baseline_val})')
 
     # Load gen probe prompts if requested
     probe_prefix = None
@@ -275,7 +315,9 @@ def main():
             opt.step()
 
         if local_step % LOG_EVERY == 0 or local_step == args.extra_steps - 1:
-            vloss = eval_mdlm_standard(model, val_x)
+            decomp = eval_mdlm_decomp(model, val_x, alpha=args.alpha, tau=args.tau)
+            vloss = decomp['uniform_nll_minsnr']
+            vloss_papl = decomp['planner_w_nll_minsnr']
             elapsed = time.time() - t0
             tps = (local_step + 1) * tokens_per_step / elapsed if elapsed > 0 else 0
             if vloss < best_val:
@@ -287,8 +329,9 @@ def main():
                              device=device)
                 extra = f' | rep4={m["rep_4"]:.3f} dist4={m["distinct_4"]:.3f} top10={m["top10_share"]:.3f}'
             print(f'  step {step:6d} (+{local_step+1:5d}) | train {total_loss:.4f} | '
-                  f'val(std) {vloss:.4f} | best {best_val:.4f} | '
-                  f'{tps/1e3:.0f}K tok/s | {elapsed:.0f}s{extra}', flush=True)
+                  f'val_uniform {vloss:.4f} | val_papl {vloss_papl:.4f} | '
+                  f'best_uniform {best_val:.4f} | {tps/1e3:.0f}K tok/s | '
+                  f'{elapsed:.0f}s{extra}', flush=True)
 
         if (local_step + 1) % CHECKPOINT_EVERY == 0 or local_step == args.extra_steps - 1:
             ckpt_path = os.path.join(args.output_dir, f'checkpoint_{step+1}.pt')
