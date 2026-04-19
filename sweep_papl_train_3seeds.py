@@ -89,8 +89,12 @@ def main():
         "baseline": common,
         # τ=0.1 per nvidia agent's preliminary finding (still sweeping; previously
         # they thought 0.3; now converging to 0.1). Sharper planner peaks → more
-        # localized reweight on high-gt-logprob positions. If their final answer
-        # is different, we rerun.
+        # localized reweight on high-gt-logprob positions. Caveat: nvidia's sweep
+        # is on TRANSFORMER MDLM; the optimal τ on our Mamba3 backbone could
+        # differ because (a) Mamba's gradient spectrum to the embedding is
+        # different from attention's, and (b) PAPL's planner sharpness interacts
+        # with the model's own log-prob distribution. If C's planner_w doesn't
+        # drop at τ=0.1, run a Mamba-side τ sweep before concluding PAPL fails.
         "papl": common + ["--papl_train", "--papl_alpha", "1.0", "--papl_tau", "0.1"],
     }
 
