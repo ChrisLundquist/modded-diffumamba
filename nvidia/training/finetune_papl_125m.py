@@ -316,7 +316,15 @@ def main():
         for opt in [adam_opt, muon_opt]:
             opt.step()
 
-        if local_step % LOG_EVERY == 0 or local_step == args.extra_steps - 1:
+        # Decide whether to log this step: at LOG_EVERY boundary, at genprobe
+        # boundary, or at end of run. Avoids the bug where genprobe_every and
+        # LOG_EVERY have no common divisor and genprobe never fires.
+        is_log_step = (local_step % LOG_EVERY == 0) or \
+                      (local_step == args.extra_steps - 1)
+        is_genprobe_step = (args.genprobe_every > 0 and
+                            ((local_step + 1) % args.genprobe_every == 0 or
+                             local_step == args.extra_steps - 1))
+        if is_log_step or is_genprobe_step:
             decomp = eval_mdlm_decomp(model, val_x, alpha=args.alpha, tau=args.tau)
             vloss = decomp['uniform_nll_minsnr']
             vloss_papl = decomp['planner_w_nll_minsnr']
@@ -325,8 +333,7 @@ def main():
             if vloss < best_val:
                 best_val = vloss
             extra = ''
-            if args.genprobe_every > 0 and probe_prefix is not None and \
-               (local_step + 1) % args.genprobe_every == 0:
+            if is_genprobe_step and probe_prefix is not None:
                 m = genprobe(model, probe_prefix, probe_cont_len, probe_prefix_len,
                              device=device)
                 extra = (f' | rep2={m["rep_2"]:.3f} rep4={m["rep_4"]:.3f} '
