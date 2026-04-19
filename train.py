@@ -918,6 +918,52 @@ def train(args):
           f"{total_tokens/1e6:.0f}M tokens, "
           f"best val_loss={best_val_loss:.4f}")
 
+    # Optional large final gen probe (resolves rep_4 past the per-val noise floor).
+    # Probes the best-val checkpoint when --save_best is on; else the final model.
+    if args.gen_probe_final:
+        probe_model = model
+        if args.save_best and os.path.exists(args.save_path):
+            print(f"Reloading best checkpoint from {args.save_path} for final gen probe...")
+            probe_model.load_state_dict(torch.load(args.save_path, map_location=device,
+                                                    weights_only=True))
+        probe_model.eval()
+        t0_probe = time.perf_counter()
+        with torch.no_grad():
+            samples = probe_model.sample(
+                batch_size=args.gen_probe_final_samples,
+                seq_len=args.gen_probe_final_seq_len,
+                num_steps=args.gen_probe_final_steps,
+                device=device.type,
+                top_k=50,
+            )
+        toks = [s.tolist() for s in samples]
+        gen_final = {
+            "rep_4": rep_n(toks, n=4),
+            "distinct_4": distinct_n(toks, n=4),
+            "top10_share": top_word_share(toks, k=10),
+            "n_samples": args.gen_probe_final_samples,
+            "seq_len": args.gen_probe_final_seq_len,
+            "num_steps": args.gen_probe_final_steps,
+            "probe_time_s": time.perf_counter() - t0_probe,
+            "from_best_ckpt": bool(args.save_best and os.path.exists(args.save_path)),
+        }
+        print(f"Final gen probe (n={gen_final['n_samples']} x {gen_final['seq_len']} tokens, "
+              f"{gen_final['num_steps']} steps, {gen_final['probe_time_s']:.1f}s):")
+        print(f"  rep_4       = {gen_final['rep_4']:.4f}")
+        print(f"  distinct_4  = {gen_final['distinct_4']:.4f}")
+        print(f"  top10_share = {gen_final['top10_share']:.4f}")
+        # Save alongside the checkpoint if possible.
+        if args.save_best and os.path.exists(args.save_path):
+            import json as _json
+            meta_path = args.save_path + ".gen.json"
+            with open(meta_path, "w") as f:
+                _json.dump(gen_final, f, indent=2)
+            print(f"  saved metrics to {meta_path}")
+        if args.wandb:
+            import wandb
+            wandb.log({f"gen_final/{k}": v for k, v in gen_final.items()
+                       if isinstance(v, (int, float))})
+
     return best_val_loss
 
 
@@ -999,6 +1045,17 @@ def parse_args():
     p.add_argument("--gen_probe_every", type=int, default=0,
                    help="Run the gen probe every N val steps (0 = every val). "
                         "Set to e.g. 4 to probe every 4th val step if cost matters.")
+    p.add_argument("--gen_probe_final", action="store_true",
+                   help="At end of training, run a LARGER gen probe on the best-val "
+                        "checkpoint (or final model if no --save_best). Resolves rep_4 "
+                        "past the per-val noise floor. Saves metrics to "
+                        "<save_path>.gen.json if a checkpoint was saved.")
+    p.add_argument("--gen_probe_final_samples", type=int, default=128,
+                   help="Samples for the end-of-training probe.")
+    p.add_argument("--gen_probe_final_seq_len", type=int, default=128,
+                   help="Sample length for the final probe.")
+    p.add_argument("--gen_probe_final_steps", type=int, default=128,
+                   help="Denoising steps for the final probe.")
     p.add_argument("--papl_train", action="store_true",
                    help="Enable PAPL (Peng 2025) self-planner reweighting in the "
                         "TRAINING loss. Loss at each masked position is multiplied by "

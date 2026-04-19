@@ -108,12 +108,17 @@ def main():
         "--muon_out_proj",
         "--loss_weight", "minsnr", "--minsnr_gamma", "1.5",
         "--data_dir", "data/fineweb-edu-10B",
-        # Decomp + gen probes enabled on BOTH arms so seed pairing within
-        # scaling is preserved and we collect PAPL-comparable numbers at
-        # each scale. NOT paired with the overnight emblr/adam1e3 runs —
-        # treat scaling results as standalone.
+        # Decomp + gen probes enabled on all arms so seed pairing within
+        # scaling is preserved and we collect comparable numbers at each
+        # scale. NOT paired with overnight runs — scaling is standalone.
         "--val_decomp",
         "--gen_probe", "--gen_probe_every", "2",
+        # End-of-training big probe on the best-val checkpoint.
+        "--save_best",
+        "--gen_probe_final",
+        "--gen_probe_final_samples", "64",
+        "--gen_probe_final_seq_len", "128",
+        "--gen_probe_final_steps", "128",
     ]
 
     # Per-scale config + batch settings.
@@ -148,15 +153,17 @@ def main():
     # (adam_baseline, adam_tuned, muon_tok_emb).
     total_runs = len(scales) * 3 * len(seeds)
 
-    # Order: for each scale, interleave arms per seed (paired). Three arms per
-    # scale so the Muon-tok_emb advantage can be separated from "Adam is
-    # undertuned at every scale" (adam_tuned uses --adam_emb_lr 1e-2 which our
-    # A sweep showed ties Muon@0.10 at quokka).
+    # Order: for each scale, interleave arms per seed (paired). Two arms per
+    # scale: the mechanism verdict at quokka already settled that Adam@3e-4
+    # is simply undertrained, so the "default Adam" arm is an uninteresting
+    # reference. The research question is whether Adam@1e-2 ≈ Muon@0.10 holds
+    # at scale, so we compare those two directly.
+    CKPT_DIR = Path(__file__).parent / "checkpoints"
+    CKPT_DIR.mkdir(exist_ok=True)
     for scale_name, scale_args in scales.items():
         muon_lr_here = per_scale_muon_lr[scale_name]
         adam_emb_lr_here = per_scale_adam_emb_lr[scale_name]
         arms = {
-            "adam_baseline": [],
             "adam_tuned":    ["--adam_emb_lr", str(adam_emb_lr_here)],
             "muon_tok_emb":  ["--muon_tok_emb", "--muon_emb_lr", str(muon_lr_here)],
         }
@@ -167,7 +174,10 @@ def main():
             for arm_name, arm_args in arms.items():
                 run_idx += 1
                 name = f"{scale_name}_{arm_name}_s{seed}"
-                full_args = scale_args + shared + arm_args + ["--seed", str(seed)]
+                # Per-run save path so --save_best + --gen_probe_final fire on each.
+                save_path = str(CKPT_DIR / f"scaling_{name}.pt")
+                full_args = (scale_args + shared + arm_args +
+                             ["--seed", str(seed), "--save_path", save_path])
                 print(f"\n[{run_idx}/{total_runs}] {name}")
                 record = run_one(name, full_args)
                 record["scale"] = scale_name

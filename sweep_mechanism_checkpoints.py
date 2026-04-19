@@ -86,6 +86,13 @@ def main():
         "--data_dir", "data/fineweb-edu-10B",
         "--seed", "42",
         "--save_best",
+        # End-of-training large gen probe so each arm's rep_4/distinct_4
+        # is resolved past the per-val n=16 noise floor for direct
+        # comparison across the LR ladder + Muon arm.
+        "--gen_probe_final",
+        "--gen_probe_final_samples", "64",
+        "--gen_probe_final_seq_len", "128",
+        "--gen_probe_final_steps", "128",
     ]
 
     # Each arm gets its own save_path and its own routing flag.
