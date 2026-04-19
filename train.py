@@ -708,13 +708,25 @@ def train(args):
             saved_lw = config.loss_weight
             config.loss_weight = "elbo"
             val_losses = []
+            decomp_acc = {"uniform_nll_masked": 0.0, "planner_w_nll_masked": 0.0, "papl_gap": 0.0}
             with torch.no_grad():
                 for _ in range(args.val_steps):
                     x_0 = next(val_loader).to(device)
                     loss, _ = model.compute_loss(x_0)
                     val_losses.append(loss.item())
+                    if args.val_decomp:
+                        # Separate forward for PAPL-style decomp (fresh t/mask; cheap).
+                        d = model.compute_loss_decomp(
+                            x_0, alpha=args.papl_alpha, tau=args.papl_tau,
+                            minsnr_gamma=args.minsnr_gamma,
+                        )
+                        for k in decomp_acc:
+                            decomp_acc[k] += d[k]
             config.loss_weight = saved_lw
             val_loss = sum(val_losses) / len(val_losses)
+            if args.val_decomp:
+                for k in decomp_acc:
+                    decomp_acc[k] /= args.val_steps
             elapsed = time.perf_counter() - t0
 
             tokens_seen = step * args.batch_size * config.max_seq_len
@@ -722,19 +734,28 @@ def train(args):
             best_val_loss = min(best_val_loss, val_loss)
             marker = " *" if is_best else ""
 
+            decomp_str = ""
+            if args.val_decomp:
+                decomp_str = (f" | uniform {decomp_acc['uniform_nll_masked']:.4f}"
+                              f" papl_w {decomp_acc['planner_w_nll_masked']:.4f}"
+                              f" gap {decomp_acc['papl_gap']:+.4f}")
             print(f"step {step:>6d}/{args.max_steps} | "
-                  f"val_loss {val_loss:.4f}{marker} | "
+                  f"val_loss {val_loss:.4f}{marker}{decomp_str} | "
                   f"tokens {tokens_seen/1e6:.1f}M | "
                   f"time {elapsed:.0f}s")
 
             if args.wandb:
                 import wandb
-                wandb.log({
+                log_dict = {
                     "val/loss": val_loss,
                     "val/best_loss": best_val_loss,
                     "tokens": tokens_seen,
                     "time": elapsed,
-                }, step=step)
+                }
+                if args.val_decomp:
+                    for k, v in decomp_acc.items():
+                        log_dict[f"val/{k}"] = v
+                wandb.log(log_dict, step=step)
 
             if is_best and args.save_best:
                 torch.save(model.state_dict(), args.save_path)
@@ -869,6 +890,15 @@ def parse_args():
                         "or equal to --adam_lr, tok_emb shares the main Adam group. "
                         "Used by the adam_emb_lr-vs-muon A/B/C to disambiguate "
                         "Muon-emb wins from Adam-undertrained-embed confounds.")
+    p.add_argument("--val_decomp", action="store_true",
+                   help="Additionally compute PAPL-style val decomposition "
+                        "(uniform_nll + planner-weighted NLL over masked positions). "
+                        "Directly comparable to nvidia/PAPL published numbers. "
+                        "Cost: one extra forward pass per val step.")
+    p.add_argument("--papl_alpha", type=float, default=1.0,
+                   help="PAPL planner weight strength (only used when --val_decomp).")
+    p.add_argument("--papl_tau", type=float, default=1.0,
+                   help="PAPL planner softmax temperature (only used when --val_decomp).")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,

@@ -584,6 +584,64 @@ class DiffuMamba3(nn.Module):
         }
         return loss, metrics
 
+    @torch.no_grad()
+    def compute_loss_decomp(self, x_0: torch.Tensor,
+                             alpha: float = 1.0,
+                             tau: float = 1.0,
+                             minsnr_gamma: float = 1.5) -> dict:
+        """PAPL-style val decomposition (Peng 2025; port of nvidia eval_mdlm_decomp).
+
+        Computes two masked-position NLLs from the SAME forward pass:
+          uniform_nll_masked: standard MDLM NLL averaged over masked positions,
+            Min-SNR gamma clamp. Differs from our historical val_loss (which
+            averages over ALL positions with SUBS=0 at unmasked) — this one
+            follows nvidia/PAPL convention and is directly comparable to their
+            published numbers.
+          planner_w_nll_masked: same, but each masked position is reweighted by
+            w_i = softmax(log p(x_0^i | x_t) / tau) over masked positions, with
+            planner weight `1 + alpha * w`. This is PAPL's training objective.
+
+        Reviewer signature of successful sampler-aware training: planner_w drops
+        meaningfully while uniform moves little — means the model has
+        reallocated capacity toward positions the self-planner would visit.
+        """
+        self.eval()
+        B, L = x_0.shape
+        t = self._sample_t(B, x_0.device)
+        sigma, dsigma = self.noise(t)
+        move_chance = self.noise.move_chance(t).unsqueeze(1)
+        x_t = self.q_xt(x_0, move_chance)
+        sigma_cond = sigma if self.config.time_conditioning else torch.zeros_like(sigma)
+        log_probs = self(x_t, sigma_cond)  # (B, L, V), SUBS already applied
+
+        gt_lp = torch.gather(log_probs, dim=-1,
+                             index=x_0.unsqueeze(-1)).squeeze(-1)  # (B, L)
+
+        # Min-SNR weight (per sample): clamp(1/t, max=gamma)
+        ew = torch.clamp(dsigma / torch.expm1(sigma), max=minsnr_gamma)  # (B,)
+
+        mask = (x_t == self.config.mask_token_id)  # (B, L)
+        mf = mask.float()
+        mask_count = mf.sum(dim=1).clamp(min=1.0)  # (B,)
+        per_token_loss = -gt_lp  # (B, L) — NLL; 0 at unmasked via SUBS
+
+        # Uniform: average over masked positions, then Min-SNR weighted
+        u_per_sample = (per_token_loss * mf).sum(dim=1) / mask_count
+        uniform_nll = (u_per_sample * ew).mean().item()
+
+        # Planner-weighted: w_i = softmax(gt_lp / tau) over masked positions only
+        scores = (gt_lp / tau).masked_fill(~mask, -1e4)
+        w = torch.softmax(scores, dim=1) * mf  # zero at unmasked
+        papl_w = 1.0 + alpha * w
+        p_per_sample = (per_token_loss * mf * papl_w).sum(dim=1) / mask_count
+        planner_w_nll = (p_per_sample * ew).mean().item()
+
+        return {
+            "uniform_nll_masked": uniform_nll,
+            "planner_w_nll_masked": planner_w_nll,
+            "papl_gap": uniform_nll - planner_w_nll,  # sampler-alignment signal
+        }
+
     # ------------------------------------------------------------------
     # Sampling (inference)
     # ------------------------------------------------------------------
