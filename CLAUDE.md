@@ -50,18 +50,23 @@ Current status: Mamba3 non-MIMO works. MIMO configs silently fall back to non-MI
 image diffusion (arXiv 2512.12386) but succeeds here because MDLM uses cross-entropy.
 Advantage: +0.34 nats, validated with 3 paired seeds at 5k steps.
 
-**tok_emb in Muon wins at 5k, BUT causal story is confounded (2026-04-18).** The
-geometric analysis (results/geometry/REPORT.md) found tok_emb is the ONLY matrix
-showing classic Huh-2021 simplicity-bias decay under Adam (stable rank 0.014→0.009,
-sigma_max 56→77 over 10k→50k steps). Routing tok_emb + tied lm_head through Muon-VS
-(flag: --muon_tok_emb) saves -0.115 nats at 5k, all 3 paired seeds agreed.
-HOWEVER: the flag bundles (a) ~380x effective-LR jump on 19.3M embed params,
-(b) Newton-Schulz orthogonalization, (c) momentum/WD semantics change. Nvidia
-finding #9 showed raising Adam embed LR from 1.5e-4 to 1e-3 was worth 0.20 nats at
-30M scale — which is in the same ballpark. The "it's the geometry" claim is NOT
-established vs "Adam tok_emb at 3e-4 was undertrained." A 3-arm A/B/C
-{baseline, Adam_emb_lr=1e-3, Muon_emb} is required to disambiguate (see
-sweep_adam_emb_lr_ablation_5k.py). 10k and gen-quality both still pending.
+**tok_emb in Muon: mechanism partially disambiguated (2026-04-19).** 3-arm
+paired 5k sweep on quokka (sweep_adam_emb_1e3_3seeds.py):
+  A Adam@3e-4 = 5.307 | B Adam@1e-3 = 5.127 (-0.179, t=-27) | C Muon@0.10 = 5.030 (-0.276 vs A, -0.097 vs B)
+Every paired delta significant (t>10, 3/3 seeds agreed). Interpretation:
+**~65% of the Muon-vs-Adam@3e-4 win is an LR story** (raising Adam embed LR to
+1e-3 captures it — directly replicates nvidia finding #9 on Mamba, so the
+phenomenon is not transformer-specific). **~35% is residual geometry** that
+Adam at nvidia-tuned LR cannot reproduce (-0.097 nats, larger than our own
+--muon_out_proj contribution of -0.057). Best emb_lr curve (sweep_muon_emb_lr*
++ exp-e): monotonic 0.003->0.10, mean 5.030 at 0.10 (best single run: sub-5.0
+at seed 2024 = 4.9935). CLI: `--muon_tok_emb --muon_emb_lr 0.10`.
+Open: (a) Adam@3e-3/1e-2 untested (could close more of the residual;
+divergence mode applies to blocks, not the tok_emb group since --adam_emb_lr
+is tok_emb-only); (b) 10k validation; (c) scaling sweep pending (does the
+0.097 residual shrink with embedding fraction?); (d) ELBO->gen transfer
+untested — nvidia has evidence at 125M that ELBO wins don't transfer to
+generation.
 
 **Best generative model: 10L×640d @ 30k steps** (111.7M params, Mamba3 Triton non-MIMO)
 - **gen-PPL = 54.3** under GPT-2 small with top-k=50 (beats MDLM paper's 82 at 169M/1M steps)

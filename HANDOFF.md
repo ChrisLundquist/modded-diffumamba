@@ -27,17 +27,20 @@ python eval_gen_ppl.py           # our real north-star metric
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
-- **tok_emb (+ tied lm_head) in Muon routing helps at 5k (-0.115, 3/3 seeds agree).**
-  Motivated by results/geometry/REPORT.md Fig 1-2: tok_emb is the ONLY matrix showing
-  Huh-2021 simplicity-bias decay under Adam. The *empirical win* is solid; the
-  *causal story* is NOT yet: the flag bundles three changes (effective LR ~380x
-  higher, Newton-Schulz orthogonalization, different momentum/WD semantics). The
-  Adam-tok_emb-undertrained null hypothesis is unrefuted — nvidia finding #9
-  showed raising Adam embed LR 1.5e-4->1e-3 was worth 0.20 nats at similar scale,
-  which is in the same ballpark as our 0.115. CLI: `--muon_tok_emb`. Same
-  muon_lr=0.01 as blocks, no throughput hit. **Promotion to high-confidence
-  requires the adam_emb_lr 3-arm A/B/C** (sweep_adam_emb_lr_ablation_5k.py).
-  Also: 10k validation pending, gen-quality impact untested.
+- **tok_emb in Muon routing: mechanism partially disambiguated (2026-04-19).**
+  3-arm paired 5k sweep (sweep_adam_emb_1e3_3seeds.py) at quokka:
+    A: Adam tok_emb @ 3e-4 -> 5.307
+    B: Adam tok_emb @ 1e-3 -> 5.127 (-0.179 vs A, t=-27) -- REPLICATES nvidia
+       finding #9 on Mamba, so that effect is NOT transformer-specific
+    C: Muon tok_emb @ 0.10 -> 5.030 (-0.097 vs B, t=-10; -0.276 vs A, t=-17)
+  Interpretation: ~65% of the Muon-vs-Adam@3e-4 win is an LR story (Adam@1e-3
+  captures it). ~35% is residual geometry/orthogonalization signal that Adam
+  at the nvidia-tuned LR cannot reproduce. CLI: `--muon_tok_emb` + `--muon_emb_lr 0.10`.
+  Also winning emb_lr curve: monotonic through 0.003->0.10 (see exp3 + exp-e;
+  emblr0p1 mean=5.030). Caveats still open: (a) Adam@3e-3/1e-2 untested -- an
+  even higher Adam LR might close more of the residual; (b) 10k validation; (c)
+  does the 0.097-nat residual persist at 125M/1B+ (scaling sweep still queued);
+  (d) does ELBO->gen transfer (see Caveat 2 below, nvidia is studying this).
 - All-Mamba beats hybrid Mamba-attention (+0.06, t=3.7) at 31.5M scale
 - Additive merge beats gated merge (+0.24, t=7.5)
 - lr=0.01 beats lr=0.02 for Muon-VS (LR monotonically worse as it increases)
