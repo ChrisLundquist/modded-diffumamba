@@ -49,7 +49,8 @@ DATA_PATH = '/home/clundquist/muon_data/fineweb_1B.npy'
 DEFAULT_RESUME = '/mnt/d/code/gpt-slide/muon_exp/outputs/transformer_converge_v3/checkpoint_50000.pt'
 
 
-def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
+def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA,
+                   invert_planner=False):
     B, T = x.shape
     device = x.device
     t = torch.rand(B, 1, device=device) * 0.95 + 0.05
@@ -67,7 +68,11 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
         with torch.no_grad():
             logprobs = F.log_softmax(logits, dim=-1)
             gt_logprob = logprobs.gather(-1, x.unsqueeze(-1)).squeeze(-1)
-            scores = (gt_logprob / tau).masked_fill(~mask, -1e4)
+            # invert_planner=True flips the sign so HARD positions (low gt_logprob)
+            # get high planner weight. Mechanistic control: tests whether PAPL's
+            # specific direction matters or only that the loss is reweighted.
+            score_input = -gt_logprob if invert_planner else gt_logprob
+            scores = (score_input / tau).masked_fill(~mask, -1e4)
             w = F.softmax(scores, dim=1) * mask.float()
         papl_weight = 1.0 + alpha * w
     else:
@@ -160,6 +165,9 @@ def main():
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--genprobe-every', type=int, default=1000)
     ap.add_argument('--genprobe-n-prompts', type=int, default=64)
+    ap.add_argument('--invert-planner', action='store_true',
+                    help='Flip planner score sign — upweight HARD positions instead '
+                         'of easy ones. Mechanistic control for PAPL direction.')
     args = ap.parse_args()
 
     device = 'cuda'
@@ -247,7 +255,8 @@ def main():
                 x, _ = next(data_iter)
             x = x.to(device)
             with torch.autocast('cuda', dtype=torch.bfloat16):
-                loss = papl_mdlm_loss(model, x, alpha=args.alpha, tau=args.tau) / GRAD_ACCUM
+                loss = papl_mdlm_loss(model, x, alpha=args.alpha, tau=args.tau,
+                                       invert_planner=args.invert_planner) / GRAD_ACCUM
             loss.backward()
             total_loss += loss.item()
         torch.nn.utils.clip_grad_norm_(adamw_params, 1.0)
