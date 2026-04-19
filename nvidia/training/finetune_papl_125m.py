@@ -82,17 +82,15 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
     if alpha > 0:
         # PAPL self-planner weight (Peng 2025 §3.4):
         #   w_i = softmax_{masked positions}( log p(x_0^i | x_t) / tau )
-        # i.e., score positions by the model's log-probability of the
-        # GROUND-TRUTH token at that position (during training x_0 is known).
-        # Detached — it's a weighting, not a target.
+        # Planner concentration (entropy, top-1 share) measured separately by
+        # papl_diagnostics.py to avoid per-microbatch overhead.
         with torch.no_grad():
             logprobs = F.log_softmax(logits, dim=-1)
             gt_logprob = logprobs.gather(-1, x.unsqueeze(-1)).squeeze(-1)  # [B, T]
             scores = gt_logprob / tau
             scores = scores.masked_fill(~mask, -1e4)
-            w = F.softmax(scores, dim=1)
-            w = w * mask.float()   # zero non-masked positions cleanly
-        papl_weight = 1.0 + alpha * w  # [B, T]
+            w = F.softmax(scores, dim=1) * mask.float()
+        papl_weight = 1.0 + alpha * w
     else:
         papl_weight = torch.ones_like(per_token_loss)
 
@@ -106,10 +104,12 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA):
 @torch.no_grad()
 def genprobe(model, prefix_ids, cont_len, prefix_len, top_k=50, n_steps=64,
              batch_size=16, device='cuda'):
-    """Fast generation probe: rep_4, distinct_4, top10_share on a small prompt set.
+    """Fast generation probe: rep_n at multiple n + distinct_4 + top10_share.
 
     Used during training to give live signal on the metrics that actually matter
     for PAPL (which intentionally does not optimize standard val_loss).
+    Reviewer's note: tracking rep_n at multiple n separates "scale-localized
+    fix" (only rep_4 moves) from "global degeneracy fix" (rep_2..16 all move).
     """
     model.eval()
     N = prefix_ids.shape[0]
@@ -122,7 +122,9 @@ def genprobe(model, prefix_ids, cont_len, prefix_len, top_k=50, n_steps=64,
     full = torch.cat(samples, dim=0)
     completions = [row[prefix_len:].tolist() for row in full]
     return {
+        'rep_2': rep_n(completions, 2),
         'rep_4': rep_n(completions, 4),
+        'rep_8': rep_n(completions, 8),
         'distinct_4': distinct_n(completions, 4),
         'top10_share': top_word_share(completions, 10),
     }
@@ -327,7 +329,8 @@ def main():
                (local_step + 1) % args.genprobe_every == 0:
                 m = genprobe(model, probe_prefix, probe_cont_len, probe_prefix_len,
                              device=device)
-                extra = f' | rep4={m["rep_4"]:.3f} dist4={m["distinct_4"]:.3f} top10={m["top10_share"]:.3f}'
+                extra = (f' | rep2={m["rep_2"]:.3f} rep4={m["rep_4"]:.3f} '
+                         f'rep8={m["rep_8"]:.3f} dist4={m["distinct_4"]:.3f}')
             print(f'  step {step:6d} (+{local_step+1:5d}) | train {total_loss:.4f} | '
                   f'val_uniform {vloss:.4f} | val_papl {vloss_papl:.4f} | '
                   f'best_uniform {best_val:.4f} | {tps/1e3:.0f}K tok/s | '
