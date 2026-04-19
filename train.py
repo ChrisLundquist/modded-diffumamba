@@ -37,6 +37,57 @@ import torch.nn.functional as F
 from model import DiffuMamba3, DiffuMamba3Config, CONFIGS, count_parameters
 
 # ---------------------------------------------------------------------------
+# Text-quality metrics for the gen probe
+# (ported from nvidia/eval/gen_harness/metrics/{repetition,diversity}.py)
+# ---------------------------------------------------------------------------
+
+def _ngrams(tokens, n):
+    return [tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
+
+
+def rep_n(completion_list, n=4):
+    """Welleck 2019 rep-n: mean fraction of n-grams that are repeats of earlier ones."""
+    scores = []
+    for toks in completion_list:
+        grams = _ngrams(toks, n)
+        if len(grams) < 2:
+            continue
+        seen, repeats = set(), 0
+        for g in grams:
+            if g in seen:
+                repeats += 1
+            else:
+                seen.add(g)
+        scores.append(repeats / len(grams))
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+def distinct_n(completion_list, n=4):
+    """Mean (unique n-grams / total n-grams) across samples."""
+    ratios = []
+    for toks in completion_list:
+        grams = _ngrams(toks, n)
+        if not grams:
+            continue
+        ratios.append(len(set(grams)) / len(grams))
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
+def top_word_share(completion_list, k=10):
+    """Corpus-level share of tokens held by the top-k most common tokens.
+    Detects stopword-collapse degeneracy."""
+    from collections import Counter
+    counts = Counter()
+    for toks in completion_list:
+        counts.update(toks)
+    total = sum(counts.values())
+    if total == 0:
+        return 0.0
+    top = sum(c for _, c in counts.most_common(k))
+    return top / total
+
+
+# ---------------------------------------------------------------------------
 # Data loading (modded-nanogpt .bin shard format)
 # ---------------------------------------------------------------------------
 
@@ -739,8 +790,36 @@ def train(args):
                 decomp_str = (f" | uniform {decomp_acc['uniform_nll_masked']:.4f}"
                               f" papl_w {decomp_acc['planner_w_nll_masked']:.4f}"
                               f" gap {decomp_acc['papl_gap']:+.4f}")
+
+            gen_probe_str = ""
+            gen_metrics = None
+            # Trigger on val steps; every val by default, or every Nth if specified.
+            val_index = step // args.val_every
+            should_probe = (
+                args.gen_probe
+                and (args.gen_probe_every == 0 or val_index % args.gen_probe_every == 0)
+            )
+            if should_probe:
+                with torch.no_grad():
+                    samples = model.sample(
+                        batch_size=args.gen_probe_samples,
+                        seq_len=args.gen_probe_seq_len,
+                        num_steps=args.gen_probe_steps,
+                        device=device.type,
+                        top_k=50,  # standard for our stack post-sampler-fix
+                    )
+                toks = [s.tolist() for s in samples]
+                gen_metrics = {
+                    "rep_4": rep_n(toks, n=4),
+                    "distinct_4": distinct_n(toks, n=4),
+                    "top10_share": top_word_share(toks, k=10),
+                }
+                gen_probe_str = (f" | rep4 {gen_metrics['rep_4']:.3f}"
+                                 f" dist4 {gen_metrics['distinct_4']:.3f}"
+                                 f" top10 {gen_metrics['top10_share']:.3f}")
+
             print(f"step {step:>6d}/{args.max_steps} | "
-                  f"val_loss {val_loss:.4f}{marker}{decomp_str} | "
+                  f"val_loss {val_loss:.4f}{marker}{decomp_str}{gen_probe_str} | "
                   f"tokens {tokens_seen/1e6:.1f}M | "
                   f"time {elapsed:.0f}s")
 
@@ -755,6 +834,9 @@ def train(args):
                 if args.val_decomp:
                     for k, v in decomp_acc.items():
                         log_dict[f"val/{k}"] = v
+                if gen_metrics is not None:
+                    for k, v in gen_metrics.items():
+                        log_dict[f"gen/{k}"] = v
                 wandb.log(log_dict, step=step)
 
             if is_best and args.save_best:
@@ -895,6 +977,20 @@ def parse_args():
                         "(uniform_nll + planner-weighted NLL over masked positions). "
                         "Directly comparable to nvidia/PAPL published numbers. "
                         "Cost: one extra forward pass per val step.")
+    p.add_argument("--gen_probe", action="store_true",
+                   help="At each val step, generate N short samples and report "
+                        "rep_4 / distinct_4 / top_word_share. Catches degeneracy "
+                        "modes ELBO doesn't see.")
+    p.add_argument("--gen_probe_samples", type=int, default=4,
+                   help="Number of samples for the gen probe.")
+    p.add_argument("--gen_probe_seq_len", type=int, default=128,
+                   help="Sample length (tokens) for the gen probe.")
+    p.add_argument("--gen_probe_steps", type=int, default=128,
+                   help="Denoising steps for the gen probe. 128 matches our "
+                        "eval_gen_ppl.py default.")
+    p.add_argument("--gen_probe_every", type=int, default=0,
+                   help="Run the gen probe every N val steps (0 = every val). "
+                        "Set to e.g. 4 to probe every 4th val step if cost matters.")
     p.add_argument("--papl_alpha", type=float, default=1.0,
                    help="PAPL planner weight strength (only used when --val_decomp).")
     p.add_argument("--papl_tau", type=float, default=0.3,
