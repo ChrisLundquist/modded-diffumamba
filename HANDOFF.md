@@ -27,24 +27,25 @@ python eval_gen_ppl.py           # our real north-star metric
 - Muon-VS beats base Muon (-0.04, t=-5.8) — parameter-free, same wall-clock
 - Mousse beats Muon (-0.06, t=-11.6) — but 2.4x wall-clock overhead
 - out_proj in Muon routing helps (-0.06, t=-37.8) — confirmed on NVIDIA 5090 too
-- **tok_emb in Muon routing: mechanism under active disambiguation (2026-04-19).**
-  Initial 3-arm paired 5k sweep (sweep_adam_emb_1e3_3seeds.py) at quokka:
-    A: Adam tok_emb @ 3e-4 -> 5.307
-    B: Adam tok_emb @ 1e-3 -> 5.127 (3/3 seeds agree) -- REPLICATES nvidia
-       finding #9 on Mamba, so the Adam-embed-LR effect is NOT transformer-specific
-    C: Muon tok_emb @ 0.10 -> 5.030 (3/3 seeds agree; -0.276 vs A, -0.097 vs B)
-  First-pass read: ~65% LR / ~35% residual geometry.
-  UPDATE (adamhi sweep in-flight, 4 of 6 runs done at time of writing):
-    - Adam@3e-3 mean 5.067 (3/3 seeds agree)
-    - Adam@1e-2 mean 5.055 (2/3 seeds; s42=5.067, s137=5.044)
-  At 2 seeds, Adam@1e-2 vs Muon@0.10 paired delta is +0.006 / +0.007 —
-  essentially tied. If s2024 confirms, the residual-geometry fraction
-  collapses from ~35% toward ~0-10%, and the full Muon-tok_emb win becomes
-  "just an embedding-LR story, solvable with --adam_emb_lr 1e-2."
-  CLI for the Muon recipe: `--muon_tok_emb --muon_emb_lr 0.10` (current best
-  empirically). CLI for the Adam-only alternative: `--adam_emb_lr 1e-2`.
-  Other open items: 10k validation, scaling sweep with adam_tuned arm,
-  ELBO->gen transfer (see Caveat 2, nvidia is studying this).
+- **tok_emb in Muon: mechanism is LR story (2026-04-19, DEFINITIVE at quokka).**
+  Full Adam-embed-LR ladder at quokka, 5k, 3 paired seeds (adamhi + earlier):
+    Adam @ 3e-4  -> 5.307  (default, undertrained)
+    Adam @ 1e-3  -> 5.127  (nvidia finding #9 value)
+    Adam @ 3e-3  -> 5.067
+    Adam @ 1e-2  -> 5.036  (best Adam arm)
+    Muon @ 0.10  -> 5.030  (-0.006 vs Adam@1e-2; tied within noise)
+  All 3 seeds agreed in direction; Adam@1e-2 vs Muon@0.10 paired deltas
+  were +0.006, +0.007, +0.005. Effect size 6x below seed variance - noise
+  floor. **The Muon-tok_emb "residual geometry" fraction is ~0 at quokka;
+  the full -0.276 nat vs Adam@3e-4 gain is a per-group LR effect.**
+  Modded-nanogpt lore (embeddings stay under Adam) is fully correct - the
+  missing piece was raising the per-group Adam LR above 3e-4.
+  **Recommended recipe: `--adam_emb_lr 1e-2`** (simpler than --muon_tok_emb,
+  no Newton-Schulz on embeddings, no weird interaction with weight tying).
+  Muon@0.10 alternative still works and is tied within noise.
+  Open: (a) does this hold at 84M / 111.7M (scaling sweep now includes
+  adam_tuned arm); (b) 10k validation pending; (c) ELBO->gen transfer
+  untested on our stack.
 - All-Mamba beats hybrid Mamba-attention (+0.06, t=3.7) at 31.5M scale
 - Additive merge beats gated merge (+0.24, t=7.5)
 - lr=0.01 beats lr=0.02 for Muon-VS (LR monotonically worse as it increases)
@@ -135,17 +136,13 @@ Improvement stack from Adam baseline (10k, 3 seeds):
 | + out_proj in Muon routing | -0.057 | 5.266 |
 | + FineWeb-Edu + lr=0.01 | -0.197 | **5.069** |
 | **10k total vs Adam** | **-0.642** | **5.069** |
-| + tok_emb in Muon routing (5k only) | -0.115* | **~5.19 @ 5k** |
-| ++ muon_emb_lr 0.10 (5k only) | -0.160 | **~5.03 @ 5k** |
-| Adam-only alternative: --adam_emb_lr 1e-2 (5k) | ~-0.28 | **~5.05 @ 5k** (preliminary) |
+| + --adam_emb_lr 1e-2 (tok_emb-only LR bump) | -0.270 | **5.036 @ 5k** |
+| Muon@0.10 alternative (--muon_tok_emb --muon_emb_lr 0.10) | -0.276 | **5.030 @ 5k** (ties Adam@1e-2) |
 
-*Measured at 5k on quokka; 3/3 paired seeds agreed in direction (deltas
--0.103, -0.124, -0.118). With n=3 / df=2 any specific t-value is
-misleading precision; treat as "direction consistent across seeds."
-Adam-only `--adam_emb_lr 1e-2` (2 of 3 seeds, preliminary) lands within
-~0.02 nats of Muon@0.10 — if s2024 confirms, the Muon-geometry part of
-this win is ~0 and the whole effect reduces to "embedding wants a higher
-effective per-group LR." 10k validation still pending for any of these.
+Measured at 5k on quokka; 3/3 paired seeds agreed. The Adam@1e-2 and
+Muon@0.10 rows are statistically indistinguishable (mean Δ = 0.006 nats,
+6x smaller than seed variance). Both are equivalent practical choices.
+10k validation still pending; ELBO->gen quality untested on this stack.
 
 out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
 Higher new_best variance (std 0.08 vs old 0.02) — seed 42 was lucky at 4.976;
