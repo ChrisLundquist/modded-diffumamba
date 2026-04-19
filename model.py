@@ -354,6 +354,9 @@ class DiffuMamba3Config:
     gradient_checkpointing: bool = True  # recompute blocks during backward to save VRAM
     loss_weight: str = "minsnr"    # "elbo" (1/t), "flat" (1), "minsnr" (clamped 1/t)
     minsnr_gamma: float = 5.0      # clamp value for Min-SNR (Hang et al. ICCV 2023)
+    papl_train: bool = False       # Enable PAPL self-planner reweighting in compute_loss (Peng 2025)
+    papl_alpha: float = 1.0        # Strength of PAPL reweighting
+    papl_tau: float = 0.3          # Sharpness of PAPL planner softmax (nvidia agent: 0.3 effective)
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +576,21 @@ class DiffuMamba3(nn.Module):
 
         # Loss per position, weighted
         loss_per_pos = -log_p_x0 * weight.unsqueeze(1)  # (B, L)
+
+        # Optional PAPL self-planner reweighting (Peng 2025 §3.4).
+        # When enabled, loss at each MASKED position is multiplied by
+        # (1 + alpha * w_i), where w_i is a softmax over masked positions of
+        # (log p(x_0^i | x_t) / tau). Concentrates training on positions the
+        # self-planner would visit first under argmax-unmasking — aligning
+        # training with the inference sampler (nvidia PAPL port).
+        if getattr(self.config, "papl_train", False):
+            with torch.no_grad():
+                mask = (x_t == self.config.mask_token_id)  # (B, L)
+                mf = mask.float()
+                scores = (log_p_x0 / self.config.papl_tau).masked_fill(~mask, -1e4)
+                w = torch.softmax(scores, dim=1) * mf  # (B, L), 0 at unmasked
+                papl_w = 1.0 + self.config.papl_alpha * w  # (B, L), 1 at unmasked
+            loss_per_pos = loss_per_pos * papl_w
 
         # Average over all positions (unmasked positions contribute ~0 via SUBS)
         loss = loss_per_pos.mean()

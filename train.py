@@ -694,6 +694,9 @@ def train(args):
     config.time_conditioning = not args.no_time_cond
     config.loss_weight = args.loss_weight
     config.minsnr_gamma = args.minsnr_gamma
+    config.papl_train = args.papl_train
+    config.papl_alpha = args.papl_alpha
+    config.papl_tau = args.papl_tau
     if args.attn_layers:
         config.attn_layers = [int(x) for x in args.attn_layers.split(",") if x.strip()]
     if args.tie_weights:
@@ -755,9 +758,13 @@ def train(args):
         # ---- Validation ----
         if step % args.val_every == 0:
             model.eval()
-            # Always use standard ELBO weighting for val (comparable across configs)
+            # Always use standard ELBO weighting for val (comparable across configs).
+            # Also disable PAPL reweighting during val so val_loss remains a clean
+            # uniform MDLM NLL regardless of the training objective.
             saved_lw = config.loss_weight
+            saved_papl = getattr(config, "papl_train", False)
             config.loss_weight = "elbo"
+            config.papl_train = False
             val_losses = []
             decomp_acc = {"uniform_nll_masked": 0.0, "planner_w_nll_masked": 0.0, "papl_gap": 0.0}
             with torch.no_grad():
@@ -774,6 +781,7 @@ def train(args):
                         for k in decomp_acc:
                             decomp_acc[k] += d[k]
             config.loss_weight = saved_lw
+            config.papl_train = saved_papl
             val_loss = sum(val_losses) / len(val_losses)
             if args.val_decomp:
                 for k in decomp_acc:
@@ -991,6 +999,12 @@ def parse_args():
     p.add_argument("--gen_probe_every", type=int, default=0,
                    help="Run the gen probe every N val steps (0 = every val). "
                         "Set to e.g. 4 to probe every 4th val step if cost matters.")
+    p.add_argument("--papl_train", action="store_true",
+                   help="Enable PAPL (Peng 2025) self-planner reweighting in the "
+                        "TRAINING loss. Loss at each masked position is multiplied by "
+                        "(1 + alpha * w_i) where w_i is a softmax over masked "
+                        "positions of (log p(x_0^i | x_t) / tau). RNG-neutral vs "
+                        "baseline (no extra randomness beyond the normal forward).")
     p.add_argument("--papl_alpha", type=float, default=1.0,
                    help="PAPL planner weight strength (only used when --val_decomp).")
     p.add_argument("--papl_tau", type=float, default=0.3,
