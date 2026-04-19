@@ -356,7 +356,7 @@ class DiffuMamba3Config:
     minsnr_gamma: float = 5.0      # clamp value for Min-SNR (Hang et al. ICCV 2023)
     papl_train: bool = False       # Enable PAPL self-planner reweighting in compute_loss (Peng 2025)
     papl_alpha: float = 1.0        # Strength of PAPL reweighting
-    papl_tau: float = 0.3          # Sharpness of PAPL planner softmax (nvidia agent: 0.3 effective)
+    papl_tau: float = 0.1          # Sharpness of PAPL planner softmax (nvidia in-flight: 0.1 > 0.3 > 1.0)
 
 
 # ---------------------------------------------------------------------------

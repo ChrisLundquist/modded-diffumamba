@@ -1007,12 +1007,13 @@ def parse_args():
                         "baseline (no extra randomness beyond the normal forward).")
     p.add_argument("--papl_alpha", type=float, default=1.0,
                    help="PAPL planner weight strength (only used when --val_decomp).")
-    p.add_argument("--papl_tau", type=float, default=0.3,
-                   help="PAPL planner softmax temperature (only used when --val_decomp). "
-                        "Default 0.3 per nvidia agent's τ-sweep — sharper planner peaks "
-                        "are more effective than τ=1.0 because on a partially-trained "
-                        "model log-probs are already flat, so more sharpening is needed "
-                        "to localize the reweight on high-confidence positions.")
+    p.add_argument("--papl_tau", type=float, default=0.1,
+                   help="PAPL planner softmax temperature. Default 0.1 per nvidia "
+                        "agent's in-flight τ-sweep (preliminary: 0.1 > 0.3 > 1.0). "
+                        "Sharper planner peaks localize the reweight on the "
+                        "high-gt-logprob positions the argmax-unmask sampler would "
+                        "visit first. Affects both --val_decomp reporting and "
+                        "--papl_train loss when either is enabled.")
     p.add_argument("--adam_lr", type=float, default=3e-4)
     p.add_argument("--adam_wd", type=float, default=0.01)
     p.add_argument("--adam_beta2", type=float, default=0.999,

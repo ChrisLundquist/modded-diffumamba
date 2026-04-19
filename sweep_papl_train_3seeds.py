@@ -87,7 +87,11 @@ def main():
     seeds = [42, 137, 2024]
     conditions = {
         "baseline": common,
-        "papl": common + ["--papl_train", "--papl_alpha", "1.0", "--papl_tau", "0.3"],
+        # τ=0.1 per nvidia agent's preliminary finding (still sweeping; previously
+        # they thought 0.3; now converging to 0.1). Sharper planner peaks → more
+        # localized reweight on high-gt-logprob positions. If their final answer
+        # is different, we rerun.
+        "papl": common + ["--papl_train", "--papl_alpha", "1.0", "--papl_tau", "0.1"],
     }
 
     results = []
