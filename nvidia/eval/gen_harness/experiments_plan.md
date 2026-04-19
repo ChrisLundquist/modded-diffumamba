@@ -152,6 +152,40 @@ with these in mind; do not advertise them away.
    paper-faithful PAPL ablation, run with `--gamma-start 0` to disable the
    clamp. This is a planned follow-up control, not a current result.
 
+## 30M PAPL τ-sweep (active, redesigned 2026-04-19 after reviewer feedback)
+
+**Hypothesis.** PAPL with τ=1 produces only a transient 5k-step gen-quality
+perturbation because the planner softmax is too flat (top-position weight 3.4%
+vs 0.12% uniform — see `papl_concentration_check.py`). Lowering τ amplifies
+the top weight (τ=0.1 → 38.6%, ~10× signal). If the τ hypothesis is correct,
+low-τ PAPL trained from scratch should produce durable gen-quality gains over
+matched vanilla MDLM.
+
+**Phase 1 design** (4 runs, ~3h):
+- 30M D_modern, from scratch, 5000 steps, seed=42
+- Vanilla (α=0) + PAPL τ ∈ {0.3, 0.1, 0.03}, α=1.0 fixed
+- Same dataloader generator seed across all 4 runs (eliminates data-ordering confound)
+- Same script (`finetune_papl_30m.py --from-scratch`), same recipe (Muon+Adam, γ=5)
+- Comparator: the matched vanilla scratch run (NOT existing transformer_converge_v3
+  which used a different schedule/seed; reviewer flagged this confound)
+
+**Pre-registered success criterion** (locked, do not move):
+- PAPL@τ "wins" if **rep_4 reduction ≥ 0.02** AND **teacher_NLL increase ≤ 0.10 nats**
+  vs matched vanilla, **on at least 2 seeds**.
+- Phase 1 (single seed) is screening: identifies winning τ. Decision criterion gate
+  is met only after Phase 2 confirms with 2nd seed.
+
+**Phase 2 design** (conditional, ~2h if any τ qualifies):
+- Best τ from phase 1 + matched vanilla, seed=43, single additional seed each
+- Final criterion: signal present on BOTH seeds at the same τ
+
+**Diagnostics during/after each run:**
+- Live: `val_uniform | val_papl` decomposition every 500 steps, multi-n rep
+  (rep_2/4/8) + distinct_4 every 1000 steps
+- Checkpoint-time: `papl_diagnostics.py` (planner-sampler ρ, ECE, T-sweep gap)
+- Reviewer-flagged sanity: log planner-sampler ρ at intermediate step (1000 vs 5000)
+  to confirm the planner ranking has signal before low-τ amplifies it
+
 ## Compute
 
 - Exp 4 (running): resume + 10k steps × 125M. ~3.7 hours on 5090. Current run.

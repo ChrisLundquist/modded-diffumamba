@@ -68,6 +68,12 @@ MODEL_SPECS = {
                     use_rope=True, use_swiglu=True),
     ),
     # 30M PAPL τ-sweep, scratch-trained 5k steps with varying tau (single seed=42)
+    'd_modern_30m_vanilla_scratch_s42': dict(   # matched vanilla baseline (α=0)
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_vanilla_scratch_s42/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
     'd_modern_30m_papl_scratch_tau1': dict(
         family='transformer_v2',
         ckpt='muon_exp/outputs/30m_papl_scratch_tau1/checkpoint_5000.pt',
