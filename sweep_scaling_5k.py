@@ -108,6 +108,12 @@ def main():
         "--muon_out_proj",
         "--loss_weight", "minsnr", "--minsnr_gamma", "1.5",
         "--data_dir", "data/fineweb-edu-10B",
+        # Decomp + gen probes enabled on BOTH arms so seed pairing within
+        # scaling is preserved and we collect PAPL-comparable numbers at
+        # each scale. NOT paired with the overnight emblr/adam1e3 runs —
+        # treat scaling results as standalone.
+        "--val_decomp",
+        "--gen_probe", "--gen_probe_every", "2",
     ]
 
     # Per-scale config + batch settings.
