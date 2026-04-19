@@ -587,7 +587,7 @@ class DiffuMamba3(nn.Module):
     @torch.no_grad()
     def compute_loss_decomp(self, x_0: torch.Tensor,
                              alpha: float = 1.0,
-                             tau: float = 1.0,
+                             tau: float = 0.3,
                              minsnr_gamma: float = 1.5) -> dict:
         """PAPL-style val decomposition (Peng 2025; port of nvidia eval_mdlm_decomp).
 
