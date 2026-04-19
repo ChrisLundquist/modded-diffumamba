@@ -132,8 +132,10 @@ def main():
     ap.add_argument('--temperature', type=float, default=1.0)
     ap.add_argument('--n-steps', type=int, default=None,
                     help='Demasking steps (topk default cont_len//2; maskgit default 12).')
-    ap.add_argument('--sampler', choices=['topk', 'maskgit'], default='topk',
-                    help='MDLM sampler (AR models always use ancestral top-k).')
+    ap.add_argument('--sampler', choices=['topk', 'maskgit', 'remdm'], default='topk',
+                    help='MDLM sampler (AR models always use ancestral top-k). '
+                         'topk: one-shot pre-nucleus; maskgit: known-buggy; '
+                         'remdm: Chang 2022 / Wang 2025 confidence-based remasking.')
     ap.add_argument('--skip-teacher', action='store_true')
     ap.add_argument('--no-append', action='store_true',
                     help='Do not append to leaderboard.jsonl (just print).')

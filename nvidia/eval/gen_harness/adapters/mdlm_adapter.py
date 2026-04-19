@@ -24,10 +24,12 @@ HARNESS_DIR = os.path.abspath(os.path.join(THIS_DIR, '..'))
 sys.path.insert(0, HARNESS_DIR)
 from samplers.mdlm_topk import demask_topk_prefix  # noqa: E402
 from samplers.mdlm_maskgit import maskgit_prefix  # noqa: E402
+from samplers.mdlm_remdm import remdm_prefix  # noqa: E402
 
 SAMPLERS = {
     'topk': demask_topk_prefix,
-    'maskgit': maskgit_prefix,
+    'maskgit': maskgit_prefix,    # known-buggy; documented in module
+    'remdm': remdm_prefix,         # Chang 2022 / Wang 2025 corrected version
 }
 
 
