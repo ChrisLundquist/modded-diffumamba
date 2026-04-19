@@ -81,7 +81,11 @@ def main():
         "--loss_weight", "minsnr", "--minsnr_gamma", "1.5",
         "--data_dir", "data/fineweb-edu-10B",
         "--val_decomp",
-        "--gen_probe", "--gen_probe_every", "4",
+        # n=16 samples (vs the 4 default) so rep_4 / distinct_4 estimates aren't
+        # noise-dominated. nvidia's phase-1 used n=64 small-probe + n=500 final
+        # eval; we're in between. Every 2 val steps = 10 probes per 5k run
+        # = ~2.5 min extra per run (negligible).
+        "--gen_probe", "--gen_probe_every", "2", "--gen_probe_samples", "16",
     ]
 
     seeds = [42, 137, 2024]
