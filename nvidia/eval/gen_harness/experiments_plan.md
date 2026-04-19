@@ -31,13 +31,28 @@ non-uniform unmasking planner. Correction is a drop-in per-position reweight.
 
 ## Papers referenced
 
-| Paper | Authors | Year | arXiv / Venue | PDF present |
-|---|---|---|---|---|
-| Planner Aware Path Learning (P-ELBO) | Peng et al. | 2025 | 2509.23405 | **yes** |
-| VDM++ | Kingma & Gao | 2023 | 2303.00848 | TBD |
-| Improved Noise Schedule for Diffusion Training | Hang et al. | ICCV 2025 | arXiv TBD | TBD |
-| Denoising Task Difficulty-based Curriculum | Kim et al. | ICML 2024 | arXiv TBD | TBD |
-| Frequency-Informed MDLM | Kosmopoulou et al. | 2025 | arXiv TBD | TBD |
+All present in `/home/clundquist/modded-diffumamba/papers/`.
+
+### Loss / objective (immediate relevance)
+- **PAPL / P-ELBO** (Peng 2025, 2509.23405) — sampler-aware ELBO; running fine-tune now.
+- **P2 Path Planning for MDM Sampling** (Peng 2025a, 2502.03540) — PAPL's predecessor; planning + denoising as 2-stage; unifies MaskGIT/RDM/top-k.
+- **VDM++** (Kingma & Gao 2023, 2303.00848) — w(λ)·p(λ) decomposition framework.
+- **Improved Noise Schedule** (Hang 2024, 2407.03297) — p(λ) > w(λ) leverage; Laplace/Cauchy schedules.
+- **Denoising Curriculum** (Kim 2024, 2403.10348) — easy-to-hard t-curriculum.
+- **Frequency-Informed MDLM** (Kosmopoulou 2025, 2509.05056) — cosine/bimodal mask schedules.
+- **MuLAN: Diffusion Models with Learned Adaptive Noise** (Sahoo 2023, 2312.13236) — learned per-timestep noise.
+
+### Architectural ELBO tightening
+- **Block Diffusion (BD3LM)** (Arriola 2025, 2503.09573) — block-AR + within-block diffusion. NELBO variance analysis + clipped noise schedules. **Reviewer top-1 recommendation** for stacking with PAPL.
+- **ADLM Anchored Diffusion LM** (2505.18456) — anchor network predicting pivot token; OWT PPL 20.14, first DLM to beat AR on MAUVE w/ remasking. **Reviewer top-3 recommendation** (architectural change, biggest payoff).
+- **Loopholing Discrete Diffusion** (Jo 2025, 2510.19304) — deterministic forward of predicted distribution; -55% Gen-PPL vs MDLM.
+
+### Inference-time correctors
+- **ReMDM** (Wang 2025, 2503.00307) — remasking diffusion, allows committed tokens to revert. **Reviewer top-2 recommendation** (cheap, stacks with PAPL).
+- **Informed Correctors** (Zhao 2024, 2407.21243) — discrete diffusion correctors at inference.
+
+### Planner-side / order policies
+- **Any-Order Flexible-Length MDM** (Kim 2025, 2509.01025) — adds insertion to MDM; learns order end-to-end.
 
 ## Experiments (pre-registered)
 
@@ -150,8 +165,31 @@ gates the rest.
 
 | Exp | Status | Output |
 |---|---|---|
-| 4. P-ELBO fine-tune | **in progress** | `muon_exp/outputs/125m_papl_finetune/checkpoint_{45000,50000}.pt`, eval at `leaderboard.jsonl` |
+| 4. P-ELBO fine-tune (40k → 45k) | done, signal positive | rep_4 0.153 → 0.128 in 5k steps |
+| 4b. P-ELBO fine-tune (45k → 50k) | **in progress** | `muon_exp/outputs/125m_papl_finetune/checkpoint_50000.pt` |
 | 1. Baseline | already run (72k trajectory) | `trajectory_d_modern_125m.jsonl` |
 | 2. γ-decay | not started | — |
 | 3. p(t) curriculum | not started | — |
-| 5. P-ELBO from scratch | blocked on Exp 4 | — |
+| 5. P-ELBO from scratch | blocked on Exp 4b | — |
+
+## Future work — ranked by reviewer's leverage estimate
+
+These compose with our current PAPL track. Implement only if Exp 4 + diagnostics
+confirm the mechanism is real on our setup.
+
+1. **Clipped noise schedule (BD3LM-style)** — tune α_t schedule for minimum NELBO
+   variance on a held-out grid; replace our linear `1-exp(-5t)` schedule. Cheap,
+   composes cleanly with PAPL. Reviewer's top recommendation.
+2. **Remasking corrector at inference (ReMDM / Informed Correctors)** — inference-time
+   add-on that lets committed tokens revert under low-confidence signal. Stacks
+   with PAPL. Cheap; needs mostly sampler-side code.
+3. **ADLM anchor network** — architectural change, requires retraining from scratch
+   with an extra "pivot" head. Strongest published numbers (OWT PPL 20.14,
+   first MDLM to beat AR on MAUVE with remasking). Largest investment, largest
+   potential gain.
+
+Lower-priority items (catalogued, not currently planned):
+- Hierarchical / tree-structured vocab (HDLM, TDLM)
+- Soft-Masked Diffusion (mask embedding blended w/ top-k predictions)
+- Post-training/alignment: VRPO, ELBO-KTO, diffu-GRPO, GDPO, LFPO
+- Variance reduction: antithetic t-sampling, length-stratified batches
