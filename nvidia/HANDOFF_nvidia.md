@@ -1,5 +1,95 @@
 # MDLM + Mamba3 Experiment Handoff
 
+## STATUS UPDATE 2026-04-19: rep pathology is a sampler problem; PAPL is null
+
+**Headline reframe**: transformer-MDLM has a real repetition pathology
+(rep_4 ≈ 0.16 vs real text 0.012). After ~3 days of experiments:
+
+1. **Mamba-MDLM doesn't have the pathology** (rep_4 ≈ 0.003, ROCm agent's data).
+   Cross-architecture comparison at matched ~30M, FineWeb-Edu, MDLM objective.
+   60× lower vanilla repetition than transformer.
+
+2. **Training-side fix (PAPL, Peng 2025) is seed-unstable on transformer.**
+   Phase-1 single-seed result at 30M scratch (PAPL τ=0.3 reduced rep_4 by 0.046)
+   did NOT replicate at seed=43 (Δ=0.001). Mean across seeds ~0.02 — at the
+   pre-registered threshold but with extreme between-seed variance. Inverse-PAPL
+   (mechanistic control: same code, sign-flipped planner score) shows nearly
+   the same effect, confirming most of the gain is "any per-position reweight"
+   not PAPL's specific direction. PAPL is also null on Mamba (ROCm agent).
+
+3. **Inference-side fix (ReMDM+Gumbel, Wang 2025 + Chang 2022) reliably reduces
+   transformer rep_4 by ~50%** across seeds AND scales:
+   - 30M vanilla s42: 0.162 → 0.086 (ReMDM n=24)
+   - 30M vanilla s43: 0.168 → 0.125 (ReMDM n=24)
+   - 30M vanilla s42 at n_steps=48: **rep_4 = 0.071** (best)
+   - 125M @ 40k: 0.131 → 0.085 (ReMDM n=24)
+   - 125M @ 50k: 0.146 → 0.094 (ReMDM n=24)
+
+   Cost: ReMDM moves to a different Pareto point. Teacher_NLL increases by
+   ~1 nat (3.6 → 4.5 on GPT-2; 3.5 → 4.4 on rhysjones-FWE). Higher entropy,
+   more diverse, less "WebText-fluent" outputs.
+
+4. **Mechanism (untested directly but well-supported by literature)**:
+   bidirectional attention's softmax over keys produces sharp output
+   distributions at masked positions; confidence-based unmasking commits
+   to high-confidence stopwords first; cumulative repetition. Mamba's
+   bidirectional structure (forward + backward scans averaged) routes info
+   through fixed-dim hidden state, producing structurally smoother output
+   distributions — no concentration to lock onto. ReMDM's revisability +
+   Gumbel jitter (confidence_noise=4.5, Chang 2022 default) breaks the
+   stopword attractor at inference for transformer; without Gumbel the
+   sampler degenerates (rep_4 ≈ 0.75).
+
+5. **Honest gap to ceiling**:
+   - Real text rep_4 = 0.012
+   - rhysjones AR (124M, FWE-trained) rep_4 = 0.022
+   - Best transformer-MDLM (30M + ReMDM n=48) rep_4 = 0.071 — still 3-6× worse
+   - Mamba-MDLM (ROCm agent, vanilla) rep_4 = 0.003 — beats real text on rep_4
+
+6. **CRITICAL CAVEAT on the ReMDM "win" — qualitative samples show different
+   failure mode, not better text** (2026-04-19, qualitative read of vanilla
+   30M s43 samples on prompt #3 about net stock accounting):
+   - vanilla+topk: *"sub assets plus the tax of all. tax tax tax tax tax tax
+     tax tax tax tax tax tax tax tax tax tax tax tax tax..."* (high-confidence
+     stopword collapse — what rep_4 metric flags)
+   - vanilla+ReMDM (Gumbel 4.5): *"income stock. are generally for total. by
+     which account is fixed to the and, stock the the paid. are the stock.
+     on fixed net tax total. and1 is be income; equa"* (high-entropy
+     fragmentation — short phrases, broken grammar, scattered punctuation)
+   - REAL: coherent paragraph about asset accounting
+
+   ReMDM trades **high-confidence repetition** for **high-entropy
+   fragmentation**. Both are broken; rep_4 doesn't penalize fragmentation.
+   The +1 nat teacher_NLL increase under ReMDM is real — the text really is
+   less fluent, just less repetitive. ReMDM is a metric-artifact win on
+   rep_4, not a quality win.
+
+   The HONEST headline is "transformer-MDLM at 30M produces broken text in
+   either failure mode; Mamba-MDLM doesn't have this issue at the same scale."
+
+   **125M + ReMDM read (2026-04-19, prompts #3/17/50)**: still fragmented
+   ("125M@50k+remdm: '- is of\n, and not\n- We can.\n- is does.\n-----'").
+   Worse: rep pathology partially leaks through the Gumbel noise on prompts
+   with strong context cues — "hol hol hol hol hol my (...) hol hol hol hol"
+   on prompt #50 (about golf). The bigger model's sharper logits resist the
+   noise injection more than the 30M's. ReMDM is fundamentally a band-aid.
+
+7. **What ReMDM tells us about the mechanism** (interpretation, 2026-04-19):
+   The fact that adding annealed Gumbel noise to the confidence ranking
+   produces MORE diverse but FRAGMENTED output (rather than coherent diverse
+   output) is itself evidence that the underlying issue is **the model's
+   training-time output distribution is too peaky for confidence-based
+   sampling at any noise level**. Either:
+   - Greedy → repetition (high confidence locks onto stopwords)
+   - Noisy → fragmentation (noise breaks repetition by sampling unrelated
+     tokens that don't compose)
+   No middle ground exists in the topk/ReMDM family.
+
+   Implication: the right fix is to **train the model to produce smoother
+   output distributions at masked positions** — either architectural
+   (something Mamba-like) or via training-side regularization (output entropy
+   penalty, label smoothing). Sampler-side fixes have hit a ceiling.
+
 ## Status: 125M D_modern on 10B complete — generation worse than a Markov chain
 
 ### Summary (2026-04-18)

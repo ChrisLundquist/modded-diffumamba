@@ -195,16 +195,23 @@ matched vanilla MDLM.
 Total if all run: ~36 hours of 5090 time. Exp 4 is a ~10% of that cost and
 gates the rest.
 
-## Status
+## Status (updated 2026-04-19)
 
-| Exp | Status | Output |
+| Exp | Status | Outcome |
 |---|---|---|
-| 4. P-ELBO fine-tune (40k → 45k) | done, signal positive | rep_4 0.153 → 0.128 in 5k steps |
-| 4b. P-ELBO fine-tune (45k → 50k) | **in progress** | `muon_exp/outputs/125m_papl_finetune/checkpoint_50000.pt` |
-| 1. Baseline | already run (72k trajectory) | `trajectory_d_modern_125m.jsonl` |
-| 2. γ-decay | not started | — |
-| 3. p(t) curriculum | not started | — |
-| 5. P-ELBO from scratch | blocked on Exp 4b | — |
+| 4. P-ELBO fine-tune at 125M (40k → 50k) | done | Transient +5k peak then regression to vanilla; planner-sampler ρ flat → null mechanism |
+| 4b. 30M PAPL τ-sweep, scratch, seed=42 (4 conditions) | done | PAPL τ=0.3 best Δrep_4=−0.046 vs vanilla |
+| 4c. inverse-PAPL τ=0.3 mechanistic control | done | Δrep_4=−0.028 — most of PAPL effect is generic per-position reweighting |
+| 4d. Phase-2 seed=43 cross-seed validation | done | **PAPL effect did NOT replicate** (s43 Δ=−0.001 vs s42 Δ=−0.040). Pre-registered criterion fails strict reading. |
+| ReMDM (Wang 2025) inference, confidence_noise=0 | done | Catastrophic stopword collapse, rep_4=0.75 |
+| ReMDM (Wang 2025) inference, confidence_noise=4.5 | done | **Reliable 50% rep_4 reduction across seeds and scales** |
+| ReMDM n_steps sweep on vanilla 30M | done | n_steps=48 optimal, rep_4=0.071 |
+| ReMDM at 125M | done | Transfers cleanly, rep_4 0.131→0.085 |
+| 1. Baseline 72k trajectory | already run | val_loss U-shape on teacher_NLL, rep_4 plateau |
+| 2. γ-decay | not started | — (deprioritized — inference fix dominates) |
+| 3. p(t) curriculum | not started | — (deprioritized) |
+| 5. P-ELBO from scratch at 125M | dropped | n=2 evidence at 30M shows PAPL doesn't replicate |
+| **Cross-arch (ROCm agent)**: PAPL on Mamba3 | done | Null effect; vanilla rep_4=0.003 (60× lower than transformer) |
 
 ## Future work — ranked by reviewer's leverage estimate
 
