@@ -50,7 +50,7 @@ DEFAULT_RESUME = '/mnt/d/code/gpt-slide/muon_exp/outputs/transformer_converge_v3
 
 
 def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA,
-                   invert_planner=False):
+                   invert_planner=False, ent_reg=0.0):
     B, T = x.shape
     device = x.device
     t = torch.rand(B, 1, device=device) * 0.95 + 0.05
@@ -82,7 +82,20 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA,
     weighted = per_token_loss * mf * papl_weight
     per_sample = weighted.sum(dim=1) / mf.sum(dim=1).clamp(min=1.0)
     elbo_weight = (k * torch.exp(-k * t) / (1.0 - torch.exp(-k * t))).clamp(max=min_snr_gamma)
-    return (per_sample * elbo_weight.squeeze(1)).mean()
+    base_loss = (per_sample * elbo_weight.squeeze(1)).mean()
+
+    # Entropy regularization at masked positions: penalize LOW entropy.
+    # Adds -ent_reg * mean_entropy_at_masked to total loss, so minimizing
+    # the loss pushes entropy up toward Mamba-like flat distributions.
+    # Hypothesis: cures the sharp-output → confidence-attractor → repetition
+    # mechanism at training time, instead of patching at inference (ReMDM).
+    if ent_reg > 0:
+        log_p = F.log_softmax(logits, dim=-1)
+        probs = log_p.exp()
+        ent = -(probs * log_p).sum(dim=-1)  # [B, T]
+        mean_ent_at_masked = (ent * mf).sum() / mf.sum().clamp(min=1.0)
+        base_loss = base_loss - ent_reg * mean_ent_at_masked
+    return base_loss
 
 
 def eval_mdlm_decomp(model, val_x, alpha=1.0, tau=1.0):
@@ -168,6 +181,11 @@ def main():
     ap.add_argument('--invert-planner', action='store_true',
                     help='Flip planner score sign — upweight HARD positions instead '
                          'of easy ones. Mechanistic control for PAPL direction.')
+    ap.add_argument('--ent-reg', type=float, default=0.0,
+                    help='Output-entropy regularization weight. >0 penalizes low '
+                         'entropy at masked positions (encourages flatter Mamba-like '
+                         'output distributions). Constructive test of the rep-pathology '
+                         'mechanism. Try 0.01, 0.1, 1.0.')
     args = ap.parse_args()
 
     device = 'cuda'
@@ -256,7 +274,8 @@ def main():
             x = x.to(device)
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 loss = papl_mdlm_loss(model, x, alpha=args.alpha, tau=args.tau,
-                                       invert_planner=args.invert_planner) / GRAD_ACCUM
+                                       invert_planner=args.invert_planner,
+                                       ent_reg=args.ent_reg) / GRAD_ACCUM
             loss.backward()
             total_loss += loss.item()
         torch.nn.utils.clip_grad_norm_(adamw_params, 1.0)
