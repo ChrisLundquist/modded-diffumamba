@@ -51,7 +51,9 @@ def remdm_prefix(
     temperature=1.0,
     device='cuda',
     autocast_dtype=torch.bfloat16,
-    confidence_noise=0.0,  # 0 = pure confidence; >0 adds Gumbel jitter (Chang 2022)
+    confidence_noise=4.5,  # Chang 2022 default. 0 = pure greedy confidence
+                            # which empirically degenerates into stopword
+                            # collapse on our trained checkpoints (rep_4≈0.75).
 ):
     B, P = prefix_ids.shape
     T = P + cont_len

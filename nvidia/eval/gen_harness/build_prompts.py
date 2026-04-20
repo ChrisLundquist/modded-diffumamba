@@ -67,6 +67,10 @@ def main():
 
     n_zero_prefix = int((prefix == 0).all(axis=1).sum())
     assert n_zero_prefix == 0, f'{n_zero_prefix} all-zero prefixes hit padding'
+    # Vocab safety: GPT-2 has 50257 IDs (0..50256). Our MDLM uses MASK=50257.
+    # Held-out region must not contain 50257 or downstream teacher_nll fails.
+    assert int(prefix.max()) < 50257, f'prefix contains token id {int(prefix.max())} >= 50257'
+    assert int(cont.max()) < 50257, f'continuation contains token id {int(cont.max())} >= 50257'
 
     out = {
         'prefix_ids': torch.from_numpy(prefix),

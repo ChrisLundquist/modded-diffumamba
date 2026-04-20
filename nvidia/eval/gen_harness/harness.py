@@ -96,11 +96,28 @@ def run_model(name, prompts, device, batch_size, top_k, temperature, n_steps,
     gen_time = time.time() - t0
     print(f'  [{name}] generated {N} in {gen_time:.1f}s ({N / gen_time:.2f}/s)')
 
+    # Vocab safety: AR teachers have 50257-vocab (no MASK). If a sampler ever
+    # leaks MASK_TOKEN=50257 into output, downstream teacher_nll OOBs the
+    # embedding. Fail loud here.
+    assert int(full.max().item()) < 50257, (
+        f'[{name}] sampled token id {int(full.max().item())} >= 50257 (MASK); '
+        f'sampler leaked MASK into output')
+
     completion_lists = as_completion_lists(full, prefix_len)
     sampler_label = sampler if name not in AR_SPECS else 'ar_topk'
+    # Resolve actual n_steps used so dedup-by-(model, sampler) doesn't
+    # treat n_steps=None and n_steps=<sampler-default> as different rows.
+    if name in AR_SPECS:
+        effective_n_steps = cont_len  # AR is one token per step
+    elif sampler == 'topk':
+        effective_n_steps = n_steps if n_steps is not None else cont_len // 2
+    elif sampler in ('maskgit', 'remdm'):
+        effective_n_steps = n_steps if n_steps is not None else 12
+    else:
+        effective_n_steps = n_steps if n_steps is not None else cont_len // 2
     result = {
         'model': name,
-        'sampler': f'{sampler_label}_k{top_k}_T{temperature}_steps{n_steps or "default"}',
+        'sampler': f'{sampler_label}_k{top_k}_T{temperature}_steps{effective_n_steps}',
         'n_samples': N,
         'gen_seconds': gen_time,
     }
@@ -150,6 +167,12 @@ def main():
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.set_float32_matmul_precision('high')
+    # Deterministic eval: torch.multinomial in samplers and Gumbel jitter in
+    # MaskGIT/ReMDM otherwise produce non-reproducible results across runs
+    # (vanilla rep_4 was varying 0.171 vs 0.177 between identical eval calls).
+    torch.manual_seed(1729)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(1729)
 
     prompts = torch.load(PROMPTS_PATH, weights_only=False)
     n = args.n_prompts or (5 if args.dry_run else prompts['prefix_ids'].shape[0])

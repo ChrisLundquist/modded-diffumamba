@@ -52,6 +52,11 @@ def teacher_nll(
         teacher = load_teacher(teacher_name, device)
     ids = completion_ids.to(device).long()
     assert ids.dim() == 2, f'expected [B, T], got {ids.shape}'
+    # GPT-2 vocab is 50257 (IDs 0..50256). Our MDLM uses 50258 with MASK=50257.
+    # If a sample contains 50257, embedding OOBs.
+    assert int(ids.max().item()) < 50257, (
+        f'teacher_nll: input contains token id {int(ids.max().item())} '
+        f'>= 50257 (MASK); cannot score under GPT-2-vocab teacher')
     B, T = ids.shape
     cont_len = T - prefix_len
     assert cont_len > 0
