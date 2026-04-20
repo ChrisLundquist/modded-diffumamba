@@ -50,7 +50,7 @@ DEFAULT_RESUME = '/mnt/d/code/gpt-slide/muon_exp/outputs/transformer_converge_v3
 
 
 def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA,
-                   invert_planner=False, ent_reg=0.0):
+                   invert_planner=False, ent_reg=0.0, ent_reg_threshold=0.0):
     B, T = x.shape
     device = x.device
     t = torch.rand(B, 1, device=device) * 0.95 + 0.05
@@ -84,17 +84,29 @@ def papl_mdlm_loss(model, x, alpha, tau, min_snr_gamma=MIN_SNR_GAMMA,
     elbo_weight = (k * torch.exp(-k * t) / (1.0 - torch.exp(-k * t))).clamp(max=min_snr_gamma)
     base_loss = (per_sample * elbo_weight.squeeze(1)).mean()
 
-    # Entropy regularization at masked positions: penalize LOW entropy.
-    # Adds -ent_reg * mean_entropy_at_masked to total loss, so minimizing
-    # the loss pushes entropy up toward Mamba-like flat distributions.
-    # Hypothesis: cures the sharp-output → confidence-attractor → repetition
-    # mechanism at training time, instead of patching at inference (ReMDM).
+    # Entropy regularization at masked positions.
+    # Two variants controlled by ent_reg_threshold:
+    #   threshold=0 (default): mean-entropy reg — penalize the negative mean
+    #     entropy (encourages all masked positions toward higher entropy).
+    #     Failed at λ=0.1 in the 2026-04-20 run: training defeats the
+    #     intervention because mean-reg can be satisfied by raising entropy
+    #     on positions that were already high-entropy.
+    #   threshold>0: hinge-reg — penalize max(0, threshold - H_position).
+    #     Specifically targets LOW-entropy positions (where the confidence-
+    #     based sampling attractor commits first); positions with H >=
+    #     threshold contribute 0.
     if ent_reg > 0:
         log_p = F.log_softmax(logits, dim=-1)
         probs = log_p.exp()
         ent = -(probs * log_p).sum(dim=-1)  # [B, T]
-        mean_ent_at_masked = (ent * mf).sum() / mf.sum().clamp(min=1.0)
-        base_loss = base_loss - ent_reg * mean_ent_at_masked
+        if ent_reg_threshold > 0:
+            # Hinge: positive penalty only where ent < threshold
+            penalty = (ent_reg_threshold - ent).clamp(min=0.0)
+            mean_penalty = (penalty * mf).sum() / mf.sum().clamp(min=1.0)
+            base_loss = base_loss + ent_reg * mean_penalty
+        else:
+            mean_ent_at_masked = (ent * mf).sum() / mf.sum().clamp(min=1.0)
+            base_loss = base_loss - ent_reg * mean_ent_at_masked
     return base_loss
 
 
@@ -186,6 +198,13 @@ def main():
                          'entropy at masked positions (encourages flatter Mamba-like '
                          'output distributions). Constructive test of the rep-pathology '
                          'mechanism. Try 0.01, 0.1, 1.0.')
+    ap.add_argument('--ent-reg-threshold', type=float, default=0.0,
+                    help='If >0, switches ent-reg from mean-style to hinge-style: '
+                         'penalize only positions where H < threshold. Targets the '
+                         'low-entropy positions specifically (the rep attractor). '
+                         'Suggested ~4.5 (1 std below mean H=6.0 measured at vanilla '
+                         '30M). Mean-reg failed because it gets satisfied by raising '
+                         'entropy on already-high-entropy positions.')
     args = ap.parse_args()
 
     device = 'cuda'
@@ -275,7 +294,8 @@ def main():
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 loss = papl_mdlm_loss(model, x, alpha=args.alpha, tau=args.tau,
                                        invert_planner=args.invert_planner,
-                                       ent_reg=args.ent_reg) / GRAD_ACCUM
+                                       ent_reg=args.ent_reg,
+                                       ent_reg_threshold=args.ent_reg_threshold) / GRAD_ACCUM
             loss.backward()
             total_loss += loss.item()
         torch.nn.utils.clip_grad_norm_(adamw_params, 1.0)

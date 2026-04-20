@@ -126,10 +126,22 @@ MODEL_SPECS = {
         kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
                     use_rope=True, use_swiglu=True),
     ),
-    # Entropy regularization (mechanism cure attempt)
+    # Entropy regularization (mechanism cure attempts)
     'd_modern_30m_entreg01_scratch_s42': dict(
         family='transformer_v2',
         ckpt='muon_exp/outputs/30m_entreg01_scratch_s42/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_entreg10_scratch_s42': dict(   # mean-reg λ=1.0
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_entreg10_scratch_s42/checkpoint_5000.pt',
+        kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
+                    use_rope=True, use_swiglu=True),
+    ),
+    'd_modern_30m_enthinge_scratch_s42': dict(   # hinge-reg λ=0.1, threshold=4.5
+        family='transformer_v2',
+        ckpt='muon_exp/outputs/30m_enthinge_scratch_s42/checkpoint_5000.pt',
         kwargs=dict(vocab_size=50258, n_layer=6, n_head=6, n_embd=384,
                     use_rope=True, use_swiglu=True),
     ),
