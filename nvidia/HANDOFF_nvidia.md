@@ -74,7 +74,31 @@
    on prompt #50 (about golf). The bigger model's sharper logits resist the
    noise injection more than the 30M's. ReMDM is fundamentally a band-aid.
 
-7. **What ReMDM tells us about the mechanism** (interpretation, 2026-04-19):
+7. **Entropy-mechanism diagnostic + cure attempt (2026-04-20)**:
+   - **Logit entropy at masked positions DROPS over MDLM training** (vanilla
+     30M converge_v3 trajectory): step 5k H=6.30 → step 56k H=6.09 nats
+     (max_prob 0.130 → 0.147). Confirms the first half of the mechanism:
+     transformer-MDLM output distributions sharpen monotonically.
+   - **125M is much sharper than 30M**: H=5.84 vs 6.09, max_prob 0.169 vs
+     0.147. Bigger model → sharper logits, predicting the rep problem
+     should not improve with scale (matches the data).
+   - **PAPL/inverse-PAPL did not move the entropy** at all (all 30M endpoints
+     cluster H=6.28-6.42). Per-position reweighting doesn't change the
+     distribution shape — explains why PAPL's effect was small/null.
+   - **Entropy regularization (λ=0.1) FAILED as a cure.** Briefly produced
+     Mamba-level rep_4=0.018 at step 1k(!), then training defeated the
+     intervention: rep_4 climbed steadily to 0.144 at step 5k. Final
+     500-prompt eval: rep_4=0.175 vs vanilla 0.162 — slightly WORSE.
+     val_loss +0.11 nats. Mean-entropy regularization is satisfied by
+     raising entropy on already-high-entropy positions, not the low-entropy
+     ones where the rep attractor lives.
+   - **Implication**: Mamba's output flatness is *structural*, not
+     regularizable. You can't bolt it onto a transformer with a loss term.
+     Refinements worth trying: asymmetric entropy reg (penalize only LOW
+     entropy positions), stronger λ, or architectural changes that mimic
+     Mamba's bidirectional averaging.
+
+8. **What ReMDM tells us about the mechanism** (interpretation, 2026-04-19):
    The fact that adding annealed Gumbel noise to the confidence ranking
    produces MORE diverse but FRAGMENTED output (rather than coherent diverse
    output) is itself evidence that the underlying issue is **the model's
