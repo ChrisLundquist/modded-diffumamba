@@ -357,6 +357,17 @@ class DiffuMamba3Config:
     papl_train: bool = False       # Enable PAPL self-planner reweighting in compute_loss (Peng 2025)
     papl_alpha: float = 1.0        # Strength of PAPL reweighting
     papl_tau: float = 0.1          # Sharpness of PAPL planner softmax (nvidia in-flight: 0.1 > 0.3 > 1.0)
+    # BD3LM clipped noise schedule (Arriola 2025, arXiv:2503.09573). When set
+    # to a subrange of [sampling_eps, 1.0], _sample_t draws from that narrower
+    # range to cut gradient variance at extreme mask rates. Reported by paper
+    # to close the ELBO-vs-gen gap (frames decoupling as a variance problem).
+    # Default values preserve vanilla MDLM behavior.
+    clip_t_min: float = 0.0        # 0.0 means "use sampling_eps"; set e.g. 0.3 to enable clipping
+    clip_t_max: float = 1.0        # set e.g. 0.8 to enable clipping
+    # ReMDM remasking sampler (Wang 2025, arXiv:2503.00307). Sampling-time only;
+    # set remdm_sigma_max > 0 to enable. Inference-only drop-in; no retrain.
+    remdm_sigma_max: float = 0.0   # 0 disables; paper uses 0.1-0.3 typical
+    remdm_schedule: str = "cap"    # "cap" | "constant" | "linear" (see sample())
 
 
 # ---------------------------------------------------------------------------
@@ -515,13 +526,29 @@ class DiffuMamba3(nn.Module):
     def _sample_t(self, n: int, device: torch.device) -> torch.Tensor:
         """Sample timesteps with antithetic/stratified sampling (from MDLM).
 
-        Returns t in [sampling_eps, 1].
+        Returns t in [t_min, t_max].
+
+        BD3LM clipped noise (Arriola et al., arXiv:2503.09573): when
+        training AND config.clip_t_min > sampling_eps or config.clip_t_max < 1.0,
+        t is sampled from the narrower [clip_t_min, clip_t_max] range,
+        cutting gradient variance at extreme mask rates. Paper suggests
+        (0.3, 0.8). Clipping is BYPASSED when self.training is False so
+        val_loss remains a proper ELBO over full [sampling_eps, 1.0],
+        comparable across clipped/unclipped runs.
         """
         u = torch.rand(n, device=device)
         if self.config.antithetic_sampling:
             offset = torch.arange(n, device=device).float() / n
             u = (u / n + offset) % 1
-        t = (1 - self.config.sampling_eps) * u + self.config.sampling_eps
+        # Clipping only applies in training; eval always uses full range.
+        if self.training:
+            t_min = getattr(self.config, "clip_t_min", 0.0)
+            t_max = getattr(self.config, "clip_t_max", 1.0)
+        else:
+            t_min, t_max = 0.0, 1.0
+        # Ensure we don't drop below sampling_eps regardless of what was set.
+        t_min = max(t_min, self.config.sampling_eps)
+        t = t_min + (t_max - t_min) * u
         return t
 
     def compute_loss(self, x_0: torch.Tensor) -> tuple[torch.Tensor, dict]:
@@ -748,6 +775,39 @@ class DiffuMamba3(nn.Module):
             # Only update masked positions
             is_masked = (x == self.config.mask_token_id)
             x_new = torch.where(is_masked, sampled, x)
+
+            # ReMDM remasking (Wang 2025, arXiv:2503.00307): optionally re-mask
+            # some already-unmasked tokens so the model can revise earlier
+            # decisions. Simple implementation — per-token independent remask
+            # with a schedule-dependent probability sigma_r. Disabled when
+            # remdm_sigma_max=0 (default); paper reports up to 55% gen_PPL
+            # improvement at sigma_max ~0.1-0.3 with the "cap" schedule.
+            if self.config.remdm_sigma_max > 0.0:
+                t_f = float(t)
+                t_next_f = max(float(t) - dt, eps)
+                sched = self.config.remdm_schedule
+                if sched == "constant":
+                    sigma_r = self.config.remdm_sigma_max
+                elif sched == "linear":
+                    # Linear decay toward t=0: remask aggressively while many
+                    # tokens are still masked (high t), taper as we commit.
+                    # Matches the intuition of the paper's "cap" schedule but
+                    # as a simple function of t rather than t_next/t.
+                    sigma_r = self.config.remdm_sigma_max * t_f
+                else:  # "cap" — Wang paper: σ_t ≤ (1-α_{t_next})/(1-α_t) = t_next/t
+                    # for MDLM log-linear (α_t = 1-t). Ratio is in (0, 1],
+                    # approaches 1 near t=1 (many un-revisable tokens early)
+                    # and shrinks as t→0 (few chances left to revise).
+                    # Cap at sigma_max as an upper bound.
+                    implicit = t_next_f / max(t_f, 1e-6)
+                    sigma_r = min(self.config.remdm_sigma_max, implicit)
+                if sigma_r > 0.0:
+                    currently_unmasked = (x_new != self.config.mask_token_id)
+                    draw = torch.rand(x_new.shape, device=x_new.device) < sigma_r
+                    remask = currently_unmasked & draw
+                    x_new = torch.where(remask,
+                                        torch.full_like(x_new, self.config.mask_token_id),
+                                        x_new)
 
             # Cache invalidation: if tokens changed, recompute next step
             if torch.equal(x_new, x) and not self.config.time_conditioning:

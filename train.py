@@ -697,6 +697,10 @@ def train(args):
     config.papl_train = args.papl_train
     config.papl_alpha = args.papl_alpha
     config.papl_tau = args.papl_tau
+    config.clip_t_min = args.clip_t_min
+    config.clip_t_max = args.clip_t_max
+    config.remdm_sigma_max = args.remdm_sigma_max
+    config.remdm_schedule = args.remdm_schedule
     if args.attn_layers:
         config.attn_layers = [int(x) for x in args.attn_layers.split(",") if x.strip()]
     if args.tie_weights:
@@ -1062,6 +1066,25 @@ def parse_args():
                         "(1 + alpha * w_i) where w_i is a softmax over masked "
                         "positions of (log p(x_0^i | x_t) / tau). RNG-neutral vs "
                         "baseline (no extra randomness beyond the normal forward).")
+    p.add_argument("--clip_t_min", type=float, default=0.0,
+                   help="BD3LM clipped noise lower bound (Arriola 2025). Restricts "
+                        "training-time t sampling to [clip_t_min, clip_t_max] to cut "
+                        "gradient variance at extreme mask rates. 0.0 means use "
+                        "sampling_eps (vanilla). Paper default: 0.3.")
+    p.add_argument("--clip_t_max", type=float, default=1.0,
+                   help="BD3LM clipped noise upper bound. 1.0 means vanilla. "
+                        "Paper default: 0.8.")
+    p.add_argument("--remdm_sigma_max", type=float, default=0.0,
+                   help="ReMDM remasking (Wang 2025, arXiv:2503.00307). At each "
+                        "sampling step, with probability <= this value, re-mask "
+                        "already-unmasked tokens so the model can revise. 0 "
+                        "disables (vanilla MDLM sampler). Paper suggests 0.1-0.3. "
+                        "Inference-only; no retrain required.")
+    p.add_argument("--remdm_schedule", type=str, default="cap",
+                   choices=["cap", "constant", "linear"],
+                   help="ReMDM σ schedule: 'cap' bounds by t/t_next (paper default), "
+                        "'constant' uses sigma_max throughout, 'linear' ramps to max "
+                        "as t→0.")
     p.add_argument("--papl_alpha", type=float, default=1.0,
                    help="PAPL planner weight strength (only used when --val_decomp).")
     p.add_argument("--papl_tau", type=float, default=0.1,

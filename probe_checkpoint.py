@@ -34,6 +34,10 @@ def main():
     ap.add_argument("--top_k", type=int, default=50)
     ap.add_argument("--chunk", type=int, default=16,
                     help="Per-call batch size inside model.sample() to control peak VRAM")
+    # ReMDM remasking sampler flags — inference-only; no retrain.
+    ap.add_argument("--remdm_sigma_max", type=float, default=0.0)
+    ap.add_argument("--remdm_schedule", type=str, default="cap",
+                    choices=["cap", "constant", "linear"])
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -43,6 +47,10 @@ def main():
     if args.d_model is not None:
         cfg.d_model = args.d_model
 
+    # Apply ReMDM sampler flags to the model config before instantiation.
+    cfg.remdm_sigma_max = args.remdm_sigma_max
+    cfg.remdm_schedule = args.remdm_schedule
+
     model = DiffuMamba3(cfg).to(device)
     state = torch.load(args.ckpt, map_location=device, weights_only=True)
     model.load_state_dict(state)
@@ -51,7 +59,9 @@ def main():
     print(f"Loaded {args.ckpt}")
     print(f"Config: {args.config}  d_model={cfg.d_model}  n_layers={cfg.n_layers}")
     print(f"Probing: n={args.n_samples} × seq_len={args.seq_len} × "
-          f"steps={args.num_steps}  top_k={args.top_k}")
+          f"steps={args.num_steps}  top_k={args.top_k}"
+          + (f"  ReMDM sigma_max={args.remdm_sigma_max} ({args.remdm_schedule})"
+             if args.remdm_sigma_max > 0 else ""))
 
     t0 = time.perf_counter()
     all_samples = []
