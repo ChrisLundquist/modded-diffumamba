@@ -63,6 +63,17 @@ def pick_best_muon_emb_lr():
 def run_one(name, argv_args):
     import gc
     import torch
+    # Skip-if-exists: resumable sweep. If a successful result JSON is on disk
+    # AND the matching checkpoint (if save_best is in args) is also there,
+    # don't re-run — load and return.
+    result_path = RESULTS_DIR / f"scaling_{name}.json"
+    if result_path.exists():
+        with open(result_path) as f:
+            prev = json.load(f)
+        if prev.get("status") == "OK":
+            print(f"  [SKIP] {name}: existing val_loss={prev['val_loss']:.4f} on disk")
+            return prev
+
     saved_argv = sys.argv
     sys.argv = ["train.py"] + argv_args
     t0 = time.perf_counter()
@@ -87,7 +98,6 @@ def run_one(name, argv_args):
         val_loss = float("inf")
     record = {"name": name, "val_loss": val_loss, "elapsed_seconds": elapsed,
               "status": status, "error": error, "timestamp": datetime.now().isoformat()}
-    result_path = RESULTS_DIR / f"scaling_{name}.json"
     with open(result_path, "w") as f:
         json.dump(record, f, indent=2)
     print(f"  [{status}] {name}: val_loss={val_loss:.4f}, time={elapsed:.0f}s")
