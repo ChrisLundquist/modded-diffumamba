@@ -39,9 +39,11 @@ python eval_gen_ppl.py           # our real north-star metric
     gen_PPL     = 73.1 (under GPT-2 small; text-like, not random garbage)
     unigram_H   = 5.61 (natural English ~6.5)
   Compare to nvidia's vanilla 30M transformer MDLM: rep_4 = 0.180.
-  **Our Mamba-MDLM is ~38x less repetitive at matched MDLM objective**,
-  and the generated text is demonstrably real language (GPT-2 PPL
-  solidly in the MDLM-paper 82 / LLaDA-1B 60-80 range).
+  **Our Mamba-MDLM shows roughly 20-60x lower rep_4 than their transformer-MDLM
+  reference** (point estimate ~38x at n=128 on one checkpoint; binomial
+  CI is wide given the low hit rate, and the comparison has an
+  unprompted-vs-prompted caveat). The generated text is demonstrably real
+  language (GPT-2 PPL 73, in the MDLM-paper 82 / LLaDA-1B 60-80 range).
   PAPL was designed specifically for the transformer rep problem and
   has no room to help on our stack. Val impact of PAPL was null on
   Mamba (mean delta +0.003, t=0.25, n=3). papl_gap stayed ~0 throughout
@@ -188,17 +190,22 @@ Full progression: 5.03 @ 5k → 4.86 @ 8.5k → 4.92 @ 10k. So the 5k gains
 extend in training horizon by another ~−0.17 nats to 8.5k before
 modestly regressing.
 
-**BUT: gen_PPL under GPT-2 regresses with new recipe.** E (new recipe,
-10k best val=4.86) has gen_PPL = **73.1**. Old `quokka_old_best` at 10k
-with `--muon_out_proj` only (val=5.07) had gen_PPL = 68.3 per our
-existing records. So the new recipe that wins 0.21 nats on val_loss
-LOSES ~5 PPL points on generation quality. Consistent with nvidia's
-ELBO-vs-gen decoupling observation, just milder on Mamba than theirs.
+**Preliminary n=1 signal of ELBO/gen decoupling.** E (new recipe,
+10k best val=4.86) has gen_PPL = 73.1 on a single seed. The
+comparator `quokka_old_best` at 10k with `--muon_out_proj` only
+(val=5.07) had gen_PPL = 68.3 on a single prior eval. So the new
+recipe wins 0.21 nats on val_loss but shows a ~5 PPL gap on
+generation — at n=1 on BOTH sides. Direction is consistent with
+nvidia's ELBO-vs-gen decoupling observation but not confirmed
+here yet; paired-seed replication needed before citing this as a
+finding. See proposals/gen_ppl_experiments.md for direct gen_PPL
+interventions (ReMDM, BD3LM clipped noise) we can test.
 
-**Practical takeaway:** if optimizing for val_loss, use
-`--adam_emb_lr 1e-2` (or equivalent Muon recipe). If optimizing for
-generation quality, stick with the pre-tok_emb recipe (just
-`--muon_out_proj`). No free lunch.
+**Tentative practical takeaway (subject to replication):** if
+optimizing for val_loss, `--adam_emb_lr 1e-2` or equivalent Muon
+recipe; if gen_PPL is the target, the pre-tok_emb recipe (just
+`--muon_out_proj`) may still be better. Don't commit to either
+framing until multi-seed gen_PPL lands.
 
 out_proj in Muon confirmed independently on NVIDIA 5090 by another agent.
 Higher new_best variance (std 0.08 vs old 0.02) — seed 42 was lucky at 4.976;
