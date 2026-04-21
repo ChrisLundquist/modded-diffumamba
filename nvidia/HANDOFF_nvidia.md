@@ -98,6 +98,32 @@
      entropy positions), stronger λ, or architectural changes that mimic
      Mamba's bidirectional averaging.
 
+   **Follow-up tested 2026-04-20 (entropy v2 chain, 500-prompt deterministic eval):**
+   - **mean ent-reg λ=1.0**: rep_4=0.086 (vs vanilla 0.162) BUT val=6.67
+     (+0.74 nats), teacher_NLL +0.50. Same trade as ReMDM — high-entropy
+     fragmentation, not a quality fix.
+   - **hinge ent-reg λ=0.1, t=4.5**: rep_4=0.135 (Δ=−0.027 vs vanilla),
+     val=5.94 (basically tied). Targeted reg SURVIVES training where mean
+     was defeated — confirms the diagnosis. But effect is small.
+
+   **Final state of training-side interventions (all 30M scratch s42, 500-prompt eval):**
+
+   | variant | rep_4 | val_loss | NLL_gpt2 |
+   |---|---:|---:|---:|
+   | vanilla | 0.162 | 5.93 | 3.70 |
+   | PAPL τ=0.3 | 0.129 | 5.92 | 3.80 |
+   | inverse-PAPL τ=0.3 | 0.149 | 5.92 | 3.75 |
+   | mean ent-reg λ=0.1 | 0.175 | 6.04 | 3.65 |
+   | mean ent-reg λ=1.0 | 0.086 | 6.67 | 4.20 |
+   | hinge ent-reg λ=0.1 t=4.5 | 0.135 | 5.94 | 3.86 |
+   | AR baseline | 0.022 | — | 2.88 |
+   | Mamba (cross-agent) | 0.003 | — | n/a |
+
+   **Conclusion**: small Pareto trades available (~Δrep_4=−0.03 at modest
+   fluency cost via PAPL or hinge ent-reg). No simple loss-term reaches AR
+   baseline (0.022). Mamba's structural ~0.003 is unreachable with any
+   loss-term cure tested.
+
 8. **What ReMDM tells us about the mechanism** (interpretation, 2026-04-19):
    The fact that adding annealed Gumbel noise to the confidence ranking
    produces MORE diverse but FRAGMENTED output (rather than coherent diverse
